@@ -203,9 +203,9 @@ export const Dashboard = () => {
               className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-white transition-colors"
               title="Browse GitHub repos"
             >
-              <span>⚡</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
               <span className="text-green-400 hidden sm:inline">{githubUsername}</span>
-              <span className="text-gray-600 hidden sm:inline">· Repos</span>
+              <span className="text-gray-600 hidden sm:inline">Repos</span>
             </button>
           )}
           <span className="text-gray-500 text-xs hidden sm:block">{user?.email}</span>

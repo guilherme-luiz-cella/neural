@@ -72,15 +72,26 @@ export const refreshAccessToken = async (
 };
 
 export const listFiles = async (accessToken: string): Promise<DriveFile[]> => {
-  const params = new URLSearchParams({
-    pageSize: '100',
-    fields: 'files(id,name,mimeType,modifiedTime,size)',
-    orderBy: 'modifiedTime desc',
-  });
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) throw new Error('Failed to list Drive files');
-  const data: { files: DriveFile[] } = await res.json();
-  return data.files ?? [];
+  const allFiles: DriveFile[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const params = new URLSearchParams({
+      pageSize: '1000',
+      fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,size)',
+      orderBy: 'modifiedTime desc',
+      q: 'trashed=false',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) throw new Error('Failed to list Drive files');
+    const data: { files: DriveFile[]; nextPageToken?: string } = await res.json();
+    allFiles.push(...(data.files ?? []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+
+  return allFiles;
 };

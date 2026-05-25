@@ -107,9 +107,19 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       const clusters = getClusterCentroids();
       const totalFiles = nodesRef.current.length || 1;
 
-      for (const cluster of clusters) {
-        const pct = Math.round((cluster.count / totalFiles) * 100);
-        // Min radius 50px so small clusters are still readable
+      // Distribute remainder so percentages sum exactly to 100
+      const rawPcts = clusters.map((c) => (c.count / totalFiles) * 100);
+      const floored = rawPcts.map(Math.floor);
+      const remainder = 100 - floored.reduce((a, b) => a + b, 0);
+      const diffs = rawPcts.map((r, i) => r - floored[i]);
+      const sorted = [...diffs.keys()].sort((a, b) => diffs[b] - diffs[a]);
+      const pcts = floored.slice();
+      for (let i = 0; i < remainder; i++) pcts[sorted[i]]++;
+
+      for (let ci = 0; ci < clusters.length; ci++) {
+        const cluster = clusters[ci];
+        const pct = pcts[ci];
+        // Radius scales with share of total, min 50px
         const r = Math.max(50, Math.sqrt(cluster.count) * 26);
 
         // Filled background
@@ -118,7 +128,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.fillStyle = cluster.color + '18';
         ctx.fill();
 
-        // Glow ring (radial gradient)
+        // Glow ring
         const grad = ctx.createRadialGradient(cluster.cx, cluster.cy, r * 0.4, cluster.cx, cluster.cy, r);
         grad.addColorStop(0, cluster.color + '44');
         grad.addColorStop(1, cluster.color + '00');
@@ -134,25 +144,32 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.lineWidth = 2 / zoom;
         ctx.stroke();
 
+        // Percentage arc track (outer ring segment showing share)
+        ctx.beginPath();
+        ctx.arc(cluster.cx, cluster.cy, r + 4 / zoom, -Math.PI / 2, -Math.PI / 2 + (pct / 100) * Math.PI * 2);
+        ctx.strokeStyle = cluster.color;
+        ctx.lineWidth = 3 / zoom;
+        ctx.stroke();
+
         // Category name
         const fontSize = Math.max(14, 20 / zoom);
         ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#fff';
-        ctx.fillText(cluster.name, cluster.cx, cluster.cy - 14 / zoom);
+        ctx.fillText(cluster.name, cluster.cx, cluster.cy - 16 / zoom);
+
+        // Percentage — large and prominent
+        const pctFont = Math.max(13, 18 / zoom);
+        ctx.font = `bold ${pctFont}px system-ui, sans-serif`;
+        ctx.fillStyle = cluster.color;
+        ctx.fillText(`${pct}%`, cluster.cx, cluster.cy + 2 / zoom);
 
         // File count
-        const subFont = Math.max(11, 13 / zoom);
+        const subFont = Math.max(10, 12 / zoom);
         ctx.font = `${subFont}px system-ui, sans-serif`;
-        ctx.fillStyle = cluster.color;
-        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 4 / zoom);
-
-        // Percentage
-        const pctFont = Math.max(10, 11 / zoom);
-        ctx.font = `${pctFont}px system-ui, sans-serif`;
-        ctx.fillStyle = 'rgba(156,163,175,0.8)';
-        ctx.fillText(`${pct}% of graph`, cluster.cx, cluster.cy + 20 / zoom);
+        ctx.fillStyle = 'rgba(156,163,175,0.75)';
+        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 18 / zoom);
       }
     } else {
       // ── NODE VIEW ─────────────────────────────────────────
@@ -254,9 +271,9 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           .distance((l) => 60 + (1 - (l as GraphLink).value) * 80)
           .strength((l) => (l as GraphLink).value * 0.8)
       )
-      .force('charge', d3Force.forceManyBody().strength(-180).distanceMax(300))
+      .force('charge', d3Force.forceManyBody().strength(-320).distanceMax(500))
       .force('center', d3Force.forceCenter(canvas.width / 2, canvas.height / 2).strength(0.05))
-      .force('collision', d3Force.forceCollide(NODE_RADIUS + 4))
+      .force('collision', d3Force.forceCollide(NODE_RADIUS + 22).strength(0.9))
       // Cluster force: pull nodes toward their project center
       .force('cluster', () => {
         const alpha = sim.alpha();
