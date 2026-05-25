@@ -5,9 +5,13 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 FRONTEND_URL = "http://localhost:5173"
+GOOGLE_REDIRECT_URI = "http://localhost:8787/api/drive/callback"
+GOOGLE_LOGIN_REDIRECT_URI = "http://localhost:8787/api/auth/google/callback"
 
 [env.production.vars]
-FRONTEND_URL = "https://neural.cella.website"
+FRONTEND_URL = "https://neural.cella.website,https://neural-network-3d7.pages.dev"
+GOOGLE_REDIRECT_URI = "https://api.neural.cella.website/api/drive/callback"
+GOOGLE_LOGIN_REDIRECT_URI = "https://api.neural.cella.website/api/auth/google/callback"
 
 # Secrets go in .dev.vars (local) or via `wrangler secret put` (production)
 # Never put secret values in this file

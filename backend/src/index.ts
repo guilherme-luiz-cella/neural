@@ -6,14 +6,19 @@ import apiRouter from './routes';
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.use('*', async (c, next) =>
-  cors({
-    origin: c.env.FRONTEND_URL || '*',
+app.use('*', async (c, next) => {
+  const allowed = (c.env.FRONTEND_URL || '*')
+    .split(',')
+    .map((o) => o.trim());
+
+  return cors({
+    origin: allowed.length === 1 && allowed[0] === '*' ? '*' : (origin) =>
+      allowed.includes(origin) ? origin : allowed[0],
     credentials: true,
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
-  })(c, next)
-);
+  })(c, next);
+});
 
 app.use('*', logger());
 

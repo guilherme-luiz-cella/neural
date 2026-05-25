@@ -1,0 +1,155 @@
+import { Hono } from 'hono';
+import { SignJWT, jwtVerify } from 'jose';
+import { createClient } from '@supabase/supabase-js';
+import { Env } from '../types';
+import * as driveService from '../services/googleDriveService';
+import { authMiddleware, AuthVariables } from '../middleware/auth';
+import { getValidAccessToken } from './driveHelpers';
+
+type AppEnv = { Bindings: Env; Variables: AuthVariables };
+
+const router = new Hono<AppEnv>();
+const db = (c: { env: Env }) => createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_KEY);
+const enc = (s: string) => new TextEncoder().encode(s);
+
+const makeDriveState = (userId: string, secret: string, origin: string) =>
+  new SignJWT({ userId, purpose: 'drive_oauth', origin })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime('10m')
+    .sign(enc(secret));
+
+const verifyDriveState = async (state: string, secret: string) => {
+  const { payload } = await jwtVerify(state, enc(secret));
+  return payload as { userId: string; purpose: string; origin: string };
+};
+
+// GET /api/drive/auth-url
+router.get('/auth-url', authMiddleware, async (c) => {
+  try {
+    const { userId } = c.get('user');
+    const origin = c.req.header('Origin') ?? c.env.FRONTEND_URL.split(',')[0];
+    const state = await makeDriveState(userId, c.env.JWT_SECRET, origin);
+    const url = driveService.getAuthUrl(c.env.GOOGLE_CLIENT_ID, c.env.GOOGLE_REDIRECT_URI, state);
+    return c.json({ success: true, message: 'Auth URL generated', data: { url } });
+  } catch {
+    return c.json({ success: false, message: 'Failed to generate auth URL' }, 500);
+  }
+});
+
+// GET /api/drive/callback — Google redirects here
+router.get('/callback', async (c) => {
+  const fallbackBase = c.env.FRONTEND_URL.split(',')[0];
+  try {
+    const code = c.req.query('code');
+    const state = c.req.query('state');
+
+    if (c.req.query('error') || !code || !state) {
+      return c.redirect(`${fallbackBase}/dashboard?drive_error=access_denied`);
+    }
+
+    const { userId, purpose, origin } = await verifyDriveState(state, c.env.JWT_SECRET);
+    if (purpose !== 'drive_oauth') throw new Error('Invalid state token');
+    const frontendBase = origin ?? c.env.FRONTEND_URL.split(',')[0];
+
+    const tokens = await driveService.exchangeCode(
+      code,
+      c.env.GOOGLE_CLIENT_ID,
+      c.env.GOOGLE_CLIENT_SECRET,
+      c.env.GOOGLE_REDIRECT_URI
+    );
+
+    const expires_at = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+
+    await db(c).from('google_drive_auth').upsert(
+      {
+        user_id: userId,
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at,
+      },
+      { onConflict: 'user_id' }
+    );
+
+    return c.redirect(`${frontendBase}/dashboard?drive_connected=true`);
+  } catch (err) {
+    console.error('[Drive callback]', err);
+    return c.redirect(`${fallbackBase}/dashboard?drive_error=callback_failed`);
+  }
+});
+
+// GET /api/drive/status
+router.get('/status', authMiddleware, async (c) => {
+  const { userId } = c.get('user');
+  const { data } = await db(c)
+    .from('google_drive_auth')
+    .select('id, expires_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return c.json({ success: true, message: 'Drive status', data: { connected: !!data } });
+});
+
+// GET /api/drive/files
+router.get('/files', authMiddleware, async (c) => {
+  try {
+    const { userId } = c.get('user');
+    const supabase = db(c);
+    const accessToken = await getValidAccessToken(supabase, userId, c.env);
+    const files = await driveService.listFiles(accessToken);
+    return c.json({ success: true, message: 'Drive files retrieved', data: { files } });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
+      return c.json({ success: false, message: 'Google Drive not connected' }, 400);
+    }
+    if (err instanceof Error && err.message === 'DRIVE_SESSION_EXPIRED') {
+      return c.json({ success: false, message: 'Google Drive session expired. Reconnect.' }, 401);
+    }
+    return c.json({ success: false, message: 'Failed to fetch Drive files' }, 500);
+  }
+});
+
+// POST /api/drive/sync — sync Drive files into local DB
+router.post('/sync', authMiddleware, async (c) => {
+  try {
+    const { userId } = c.get('user');
+    const supabase = db(c);
+    const accessToken = await getValidAccessToken(supabase, userId, c.env);
+    const driveFiles = await driveService.listFiles(accessToken);
+
+    // Fetch existing Drive file IDs for this user
+    const { data: existing } = await supabase
+      .from('files')
+      .select('id, google_drive_id')
+      .eq('user_id', userId)
+      .not('google_drive_id', 'is', null);
+
+    const existingMap = new Map((existing ?? []).map((f) => [f.google_drive_id, f.id]));
+
+    const toInsert = driveFiles
+      .filter((f) => !existingMap.has(f.id))
+      .map((f) => ({ user_id: userId, file_name: f.name, file_type: f.mimeType, google_drive_id: f.id }));
+
+    const toUpdate = driveFiles
+      .filter((f) => existingMap.has(f.id))
+      .map((f) => ({ id: existingMap.get(f.id)!, file_name: f.name, file_type: f.mimeType }));
+
+    let synced = 0;
+    if (toInsert.length > 0) {
+      const { data } = await supabase.from('files').insert(toInsert).select('id');
+      synced += data?.length ?? 0;
+    }
+    for (const u of toUpdate) {
+      await supabase.from('files').update({ file_name: u.file_name, file_type: u.file_type }).eq('id', u.id);
+      synced++;
+    }
+
+    return c.json({ success: true, message: `Synced ${synced} files`, data: { synced_count: synced } });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
+      return c.json({ success: false, message: 'Google Drive not connected' }, 400);
+    }
+    console.error('[Drive sync]', err);
+    return c.json({ success: false, message: 'Sync failed' }, 500);
+  }
+});
+
+export default router;

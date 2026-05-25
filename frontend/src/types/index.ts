@@ -27,3 +27,30 @@ export interface RegisterFormData {
   username: string;
   password: string;
 }
+
+export interface DBFile {
+  id: string;
+  file_name: string;
+  file_type: string | null;
+  google_drive_id: string | null;
+  project_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string | null;
+  color_tag: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime: string;
+  size?: string;
+}
