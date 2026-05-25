@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import Editor, { type OnMount } from '@monaco-editor/react';
 import { api } from '../../utils/api';
 import { AxiosError } from 'axios';
 
@@ -30,11 +30,18 @@ const detectLanguage = (fileName: string, fileType: string | null): string => {
 export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Props) => {
   const [content, setContent] = useState<string | null>(null);
   const [fileType, setFileType] = useState<string | null>(null);
+  const [githubRepo, setGithubRepo] = useState<string | null>(null);
+  const [githubPath, setGithubPath] = useState<string | null>(null);
+  const [githubSha, setGithubSha] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [pushMsg, setPushMsg] = useState('');
   const [error, setError] = useState('');
+
+  const saveRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     setLoading(true);
@@ -45,12 +52,15 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
         const file = res.data.data.file;
         setContent(file.content ?? '');
         setFileType(file.file_type);
+        setGithubRepo(file.github_repo ?? null);
+        setGithubPath(file.github_path ?? null);
+        setGithubSha(file.github_sha ?? null);
       })
       .catch(() => setError('Failed to load file content.'))
       .finally(() => setLoading(false));
   }, [fileId]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!dirty) return;
     setSaving(true);
     setSaved(false);
@@ -66,9 +76,38 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
     } finally {
       setSaving(false);
     }
+  }, [dirty, content, fileId, onSaved]);
+
+  useEffect(() => { saveRef.current = handleSave; }, [handleSave]);
+
+  const handlePush = async () => {
+    if (!githubRepo || !githubPath) return;
+    setPushing(true);
+    setPushMsg('');
+    try {
+      const res = await api.put(`/github/push/${fileId}`, {
+        commit_message: `Update ${githubPath} via Neural Network`,
+      });
+      setGithubSha(res.data.data.sha);
+      setPushMsg('Pushed!');
+      setTimeout(() => setPushMsg(''), 2500);
+    } catch (err) {
+      const axiosErr = err as AxiosError<{ message: string }>;
+      setPushMsg(axiosErr.response?.data?.message ?? 'Push failed');
+    } finally {
+      setPushing(false);
+    }
   };
 
+  const handleEditorMount: OnMount = useCallback((editorInstance, monacoInstance) => {
+    editorInstance.addCommand(
+      monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS,
+      () => saveRef.current()
+    );
+  }, []);
+
   const lang = detectLanguage(fileName, fileType);
+  const isReadOnly = !!fileType?.includes('google-apps');
 
   return (
     <div className="flex flex-col h-full bg-gray-950 overflow-hidden">
@@ -78,15 +117,32 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
           {saved && <span className="text-xs text-green-400">Saved</span>}
           {error && <span className="text-xs text-red-400">{error}</span>}
           <span className="text-xs text-gray-500">{lang}</span>
+          {githubRepo && (
+            <span className="text-xs text-gray-600 truncate max-w-[160px]" title={githubPath ?? ''}>
+              ⚡ {githubRepo}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleSave}
-            disabled={!dirty || saving}
-            className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-md transition-colors"
-          >
-            {saving ? 'Saving…' : 'Save  ⌘S'}
-          </button>
+          {githubRepo && !isReadOnly && (
+            <button
+              onClick={handlePush}
+              disabled={pushing || dirty}
+              title={dirty ? 'Save first, then push' : 'Push to GitHub'}
+              className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-300 rounded-md transition-colors"
+            >
+              {pushing ? 'Pushing…' : pushMsg || '⚡ Push'}
+            </button>
+          )}
+          {!isReadOnly && (
+            <button
+              onClick={handleSave}
+              disabled={!dirty || saving}
+              className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-md transition-colors"
+            >
+              {saving ? 'Saving…' : 'Save  ⌘S'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -102,6 +158,7 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
               setContent(val ?? '');
               setDirty(true);
             }}
+            onMount={handleEditorMount}
             theme="vs-dark"
             options={{
               minimap: { enabled: false },
@@ -114,11 +171,14 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
               smoothScrolling: true,
               cursorSmoothCaretAnimation: 'on',
               fontFamily: 'JetBrains Mono, Fira Code, Cascadia Code, monospace',
-              readOnly: fileType?.includes('google-apps') ?? false,
+              readOnly: isReadOnly,
             }}
           />
         </div>
       )}
+
+      {/* Hidden sha tracker — updated after push so next push uses fresh sha */}
+      <input type="hidden" value={githubSha ?? ''} />
     </div>
   );
 };

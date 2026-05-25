@@ -105,16 +105,22 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
     if (isClustered) {
       // ── CLUSTER VIEW ──────────────────────────────────────
       const clusters = getClusterCentroids();
+      const totalFiles = nodesRef.current.length || 1;
 
-      // Draw inter-cluster links (faint)
-      const clusterMap = new Map(clusters.map((c) => [c.name, c]));
-      // Just draw cluster bubbles, no inter-links at this zoom
       for (const cluster of clusters) {
-        const r = Math.max(40, Math.sqrt(cluster.count) * 22);
+        const pct = Math.round((cluster.count / totalFiles) * 100);
+        // Min radius 50px so small clusters are still readable
+        const r = Math.max(50, Math.sqrt(cluster.count) * 26);
 
-        // Glow ring
-        const grad = ctx.createRadialGradient(cluster.cx, cluster.cy, r * 0.5, cluster.cx, cluster.cy, r);
-        grad.addColorStop(0, cluster.color + '55');
+        // Filled background
+        ctx.beginPath();
+        ctx.arc(cluster.cx, cluster.cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = cluster.color + '18';
+        ctx.fill();
+
+        // Glow ring (radial gradient)
+        const grad = ctx.createRadialGradient(cluster.cx, cluster.cy, r * 0.4, cluster.cx, cluster.cy, r);
+        grad.addColorStop(0, cluster.color + '44');
         grad.addColorStop(1, cluster.color + '00');
         ctx.beginPath();
         ctx.arc(cluster.cx, cluster.cy, r, 0, Math.PI * 2);
@@ -124,25 +130,30 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         // Border
         ctx.beginPath();
         ctx.arc(cluster.cx, cluster.cy, r, 0, Math.PI * 2);
-        ctx.strokeStyle = cluster.color + 'aa';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = cluster.color + 'cc';
+        ctx.lineWidth = 2 / zoom;
         ctx.stroke();
 
-        // Category label
+        // Category name
         const fontSize = Math.max(14, 20 / zoom);
         ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#fff';
-        ctx.fillText(cluster.name, cluster.cx, cluster.cy - 6 / zoom);
+        ctx.fillText(cluster.name, cluster.cx, cluster.cy - 14 / zoom);
 
-        // Count
-        const subFont = Math.max(10, 13 / zoom);
+        // File count
+        const subFont = Math.max(11, 13 / zoom);
         ctx.font = `${subFont}px system-ui, sans-serif`;
-        ctx.fillStyle = cluster.color + 'cc';
-        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 16 / zoom);
+        ctx.fillStyle = cluster.color;
+        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 4 / zoom);
+
+        // Percentage
+        const pctFont = Math.max(10, 11 / zoom);
+        ctx.font = `${pctFont}px system-ui, sans-serif`;
+        ctx.fillStyle = 'rgba(156,163,175,0.8)';
+        ctx.fillText(`${pct}% of graph`, cluster.cx, cluster.cy + 20 / zoom);
       }
-      void clusterMap; // suppress lint
     } else {
       // ── NODE VIEW ─────────────────────────────────────────
       // Draw links (only rendered in node view)

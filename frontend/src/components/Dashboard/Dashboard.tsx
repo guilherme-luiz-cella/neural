@@ -3,11 +3,15 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { ConnectDrive } from '../Drive/ConnectDrive';
 import { FileExplorer } from '../Explorer/FileExplorer';
+import { GitHubPanel } from '../GitHub/GitHubPanel';
 import { api } from '../../utils/api';
 import { DBFile, Project } from '../../types';
 
 const FileEditor = lazy(() =>
   import('../Editor/FileEditor').then((m) => ({ default: m.FileEditor }))
+);
+const MediaViewer = lazy(() =>
+  import('../Editor/MediaViewer').then((m) => ({ default: m.MediaViewer }))
 );
 const GraphView = lazy(() =>
   import('../Graph/GraphView').then((m) => ({ default: m.GraphView }))
@@ -20,6 +24,13 @@ interface OpenTab {
 
 type View = 'editor' | 'graph';
 
+const isMediaFile = (fileType: string | null) =>
+  !!fileType && (
+    fileType.startsWith('image/') ||
+    fileType.startsWith('video/') ||
+    fileType.startsWith('audio/')
+  );
+
 export const Dashboard = () => {
   const { user, logout } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -30,6 +41,10 @@ export const Dashboard = () => {
   const [banner, setBanner] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
+
+  const [githubConnected, setGithubConnected] = useState(false);
+  const [githubUsername, setGithubUsername] = useState<string | null>(null);
+  const [showGithubPanel, setShowGithubPanel] = useState(false);
 
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -62,6 +77,16 @@ export const Dashboard = () => {
     }
   }, []);
 
+  const fetchGithubStatus = useCallback(async () => {
+    try {
+      const res = await api.get('/github/status');
+      setGithubConnected(res.data.data.connected);
+      setGithubUsername(res.data.data.username ?? null);
+    } catch {
+      setGithubConnected(false);
+    }
+  }, []);
+
   const refresh = useCallback(() => {
     fetchFiles();
     fetchProjects();
@@ -71,7 +96,8 @@ export const Dashboard = () => {
     fetchDriveStatus();
     fetchFiles();
     fetchProjects();
-  }, [fetchDriveStatus, fetchFiles, fetchProjects]);
+    fetchGithubStatus();
+  }, [fetchDriveStatus, fetchFiles, fetchProjects, fetchGithubStatus]);
 
   useEffect(() => {
     if (searchParams.get('drive_connected') === 'true') {
@@ -84,7 +110,16 @@ export const Dashboard = () => {
       setBanner('Failed to connect Google Drive. Try again.');
       setSearchParams({}, { replace: true });
     }
-  }, [searchParams, setSearchParams, fetchFiles]);
+    if (searchParams.get('github_connected') === 'true') {
+      setBanner('GitHub connected.');
+      setSearchParams({}, { replace: true });
+      fetchGithubStatus();
+    }
+    if (searchParams.get('github_error')) {
+      setBanner(`GitHub error: ${searchParams.get('github_error')}`);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams, fetchFiles, fetchGithubStatus]);
 
   const handleFileOpen = (file: DBFile) => {
     setView('editor');
@@ -120,12 +155,22 @@ export const Dashboard = () => {
     }
   };
 
+  const handleConnectGitHub = async () => {
+    try {
+      const res = await api.get('/github');
+      window.location.href = res.data.data.url;
+    } catch {
+      setBanner('Failed to start GitHub OAuth');
+    }
+  };
+
   const handleNodeClick = (nodeId: string, nodeName: string) => {
     handleFileOpen({ id: nodeId, file_name: nodeName } as DBFile);
     setView('editor');
   };
 
   const activeFile = files.find((f) => f.id === activeTabId);
+  const activeIsMedia = isMediaFile(activeFile?.file_type ?? null);
 
   return (
     <div className="h-screen flex flex-col bg-gray-950 text-white overflow-hidden">
@@ -152,6 +197,17 @@ export const Dashboard = () => {
           {banner && <span className="text-xs text-blue-400">{banner}</span>}
         </div>
         <div className="flex items-center gap-3">
+          {githubConnected && (
+            <button
+              onClick={() => setShowGithubPanel(true)}
+              className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-white transition-colors"
+              title="Browse GitHub repos"
+            >
+              <span>⚡</span>
+              <span className="text-green-400 hidden sm:inline">{githubUsername}</span>
+              <span className="text-gray-600 hidden sm:inline">· Repos</span>
+            </button>
+          )}
           <span className="text-gray-500 text-xs hidden sm:block">{user?.email}</span>
           <button onClick={logout} className="text-xs text-gray-500 hover:text-white transition-colors">
             Logout
@@ -177,7 +233,10 @@ export const Dashboard = () => {
               onFileOpen={handleFileOpen}
               onRefresh={refresh}
               onSyncDrive={handleSyncDrive}
+              onConnectGitHub={handleConnectGitHub}
               syncing={syncing}
+              githubConnected={githubConnected}
+              githubUsername={githubUsername}
             />
           </aside>
 
@@ -213,23 +272,32 @@ export const Dashboard = () => {
                   )}
                 </div>
 
-                {/* Editor */}
+                {/* Editor / Viewer */}
                 <div className="flex-1 overflow-hidden">
                   {activeTabId ? (
-                    <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-600 text-sm">Loading editor…</div>}>
-                      <FileEditor
-                        key={activeTabId}
-                        fileId={activeTabId}
-                        fileName={activeFile?.file_name ?? tabs.find((t) => t.id === activeTabId)?.name ?? ''}
-                        onClose={() => {
-                          setTabs((prev) => {
-                            const next = prev.filter((t) => t.id !== activeTabId);
-                            setActiveTabId(next[next.length - 1]?.id ?? null);
-                            return next;
-                          });
-                        }}
-                        onSaved={fetchFiles}
-                      />
+                    <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-600 text-sm">Loading…</div>}>
+                      {activeIsMedia ? (
+                        <MediaViewer
+                          key={activeTabId}
+                          fileId={activeTabId}
+                          fileName={activeFile?.file_name ?? ''}
+                          fileType={activeFile?.file_type ?? null}
+                        />
+                      ) : (
+                        <FileEditor
+                          key={activeTabId}
+                          fileId={activeTabId}
+                          fileName={activeFile?.file_name ?? tabs.find((t) => t.id === activeTabId)?.name ?? ''}
+                          onClose={() => {
+                            setTabs((prev) => {
+                              const next = prev.filter((t) => t.id !== activeTabId);
+                              setActiveTabId(next[next.length - 1]?.id ?? null);
+                              return next;
+                            });
+                          }}
+                          onSaved={fetchFiles}
+                        />
+                      )}
                     </Suspense>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full text-gray-700 text-sm gap-2">
@@ -250,6 +318,15 @@ export const Dashboard = () => {
             )}
           </main>
         </div>
+      )}
+
+      {/* GitHub repo browser modal */}
+      {showGithubPanel && (
+        <GitHubPanel
+          onClose={() => setShowGithubPanel(false)}
+          onImported={() => { refresh(); setShowGithubPanel(false); }}
+          projects={projects}
+        />
       )}
     </div>
   );

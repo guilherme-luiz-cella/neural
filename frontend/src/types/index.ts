@@ -33,6 +33,9 @@ export interface DBFile {
   file_name: string;
   file_type: string | null;
   google_drive_id: string | null;
+  github_repo: string | null;
+  github_path: string | null;
+  github_sha: string | null;
   project_id: string | null;
   created_at: string;
   updated_at: string;
