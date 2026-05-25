@@ -11,12 +11,14 @@ interface GraphNode extends d3Force.SimulationNodeDatum {
   file_type: string | null;
   project_id: string | null;
   color: string;
+  group: string;
 }
 
 interface GraphLink extends d3Force.SimulationLinkDatum<GraphNode> {
   source: string | GraphNode;
   target: string | GraphNode;
   value: number;
+  type: string;
 }
 
 interface GraphData {
@@ -30,6 +32,9 @@ interface Props {
   crawlTrigger: number;
 }
 
+const CLUSTER_ZOOM_THRESHOLD = 0.45; // below this → cluster view
+const NODE_RADIUS = 5;
+
 export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -37,8 +42,8 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const transformRef = useRef(d3Zoom.zoomIdentity);
   const nodesRef = useRef<GraphNode[]>([]);
   const linksRef = useRef<GraphLink[]>([]);
+  const projectsRef = useRef<GraphData['projects']>([]);
   const hoveredRef = useRef<string | null>(null);
-  const animFrameRef = useRef<number>(0);
 
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [], projects: [] });
   const [loading, setLoading] = useState(true);
@@ -59,6 +64,28 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
   useEffect(() => { fetchGraph(); }, [fetchGraph, crawlTrigger]);
 
+  // Compute cluster centroids for zoomed-out view
+  const getClusterCentroids = () => {
+    const map = new Map<string, { cx: number; cy: number; count: number; color: string; name: string }>();
+
+    for (const node of nodesRef.current) {
+      const key = node.group;
+      const project = projectsRef.current.find((p) => p.id === key);
+      const name = project?.name ?? 'Unassigned';
+      const color = project?.color_tag ?? '#4B5563';
+      const existing = map.get(key);
+      if (existing) {
+        existing.cx += node.x ?? 0;
+        existing.cy += node.y ?? 0;
+        existing.count++;
+      } else {
+        map.set(key, { cx: node.x ?? 0, cy: node.y ?? 0, count: 1, color, name });
+      }
+    }
+
+    return [...map.values()].map((c) => ({ ...c, cx: c.cx / c.count, cy: c.cy / c.count }));
+  };
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -67,67 +94,119 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
     const { width, height } = canvas;
     const t = transformRef.current;
+    const zoom = t.k;
+    const isClustered = zoom < CLUSTER_ZOOM_THRESHOLD;
 
     ctx.clearRect(0, 0, width, height);
     ctx.save();
     ctx.translate(t.x, t.y);
-    ctx.scale(t.k, t.k);
+    ctx.scale(zoom, zoom);
 
-    // Draw links
-    for (const link of linksRef.current) {
-      const s = link.source as GraphNode;
-      const t2 = link.target as GraphNode;
-      if (s.x == null || s.y == null || t2.x == null || t2.y == null) continue;
+    if (isClustered) {
+      // ── CLUSTER VIEW ──────────────────────────────────────
+      const clusters = getClusterCentroids();
 
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(t2.x, t2.y);
-      ctx.strokeStyle = `rgba(99,102,241,${Math.min(0.6, (link.value ?? 0.1) * 2)})`;
-      ctx.lineWidth = Math.max(0.5, (link.value ?? 0.1) * 2);
-      ctx.stroke();
-    }
+      // Draw inter-cluster links (faint)
+      const clusterMap = new Map(clusters.map((c) => [c.name, c]));
+      // Just draw cluster bubbles, no inter-links at this zoom
+      for (const cluster of clusters) {
+        const r = Math.max(40, Math.sqrt(cluster.count) * 22);
 
-    // Draw nodes
-    for (const node of nodesRef.current) {
-      if (node.x == null || node.y == null) continue;
-      const isHovered = hoveredRef.current === node.id;
-      const r = isHovered ? 8 : 5;
-
-      // Glow
-      if (isHovered) {
+        // Glow ring
+        const grad = ctx.createRadialGradient(cluster.cx, cluster.cy, r * 0.5, cluster.cx, cluster.cy, r);
+        grad.addColorStop(0, cluster.color + '55');
+        grad.addColorStop(1, cluster.color + '00');
         ctx.beginPath();
-        ctx.arc(node.x, node.y, r + 4, 0, Math.PI * 2);
-        ctx.fillStyle = node.color + '33';
+        ctx.arc(cluster.cx, cluster.cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
         ctx.fill();
+
+        // Border
+        ctx.beginPath();
+        ctx.arc(cluster.cx, cluster.cy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = cluster.color + 'aa';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Category label
+        const fontSize = Math.max(14, 20 / zoom);
+        ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(cluster.name, cluster.cx, cluster.cy - 6 / zoom);
+
+        // Count
+        const subFont = Math.max(10, 13 / zoom);
+        ctx.font = `${subFont}px system-ui, sans-serif`;
+        ctx.fillStyle = cluster.color + 'cc';
+        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 16 / zoom);
+      }
+      void clusterMap; // suppress lint
+    } else {
+      // ── NODE VIEW ─────────────────────────────────────────
+      // Draw links (only rendered in node view)
+      for (const link of linksRef.current) {
+        const s = link.source as GraphNode;
+        const tgt = link.target as GraphNode;
+        if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
+
+        const strength = link.value ?? 0.1;
+        const alpha = Math.min(0.8, strength * 1.5);
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(tgt.x, tgt.y);
+        ctx.strokeStyle = link.type === 'name'
+          ? `rgba(251,191,36,${alpha})`   // amber for name links
+          : `rgba(99,102,241,${alpha})`;   // indigo for semantic links
+        ctx.lineWidth = Math.max(0.5, strength * 2.5);
+        ctx.stroke();
       }
 
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = node.color;
-      ctx.fill();
+      // Draw nodes
+      for (const node of nodesRef.current) {
+        if (node.x == null || node.y == null) continue;
+        const isHovered = hoveredRef.current === node.id;
+        const r = isHovered ? NODE_RADIUS * 1.6 : NODE_RADIUS;
 
-      // Label
-      const fontSize = Math.max(9, 11 / t.k);
-      ctx.font = `${fontSize}px system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillStyle = isHovered ? '#fff' : 'rgba(209,213,219,0.9)';
-      const label = node.name.length > 24 ? node.name.slice(0, 22) + '…' : node.name;
-      ctx.fillText(label, node.x, node.y + r + fontSize);
+        // Glow
+        if (isHovered) {
+          const grad = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 3);
+          grad.addColorStop(0, node.color + '66');
+          grad.addColorStop(1, 'transparent');
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r * 3, 0, Math.PI * 2);
+          ctx.fillStyle = grad;
+          ctx.fill();
+        }
+
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = node.color;
+        ctx.fill();
+
+        // Label — only render when zoom is reasonable
+        if (zoom > 0.25) {
+          const fontSize = Math.max(9, Math.min(13, 11 / zoom));
+          ctx.font = `${fontSize}px system-ui, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = isHovered ? '#ffffff' : 'rgba(209,213,219,0.9)';
+          const label = node.name.length > 26 ? node.name.slice(0, 24) + '…' : node.name;
+          ctx.fillText(label, node.x, node.y + r + 2);
+        }
+      }
     }
 
     ctx.restore();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tick = useCallback(() => {
-    draw();
-    animFrameRef.current = requestAnimationFrame(tick);
-  }, [draw]);
-
-  // Build simulation when graph data changes
   useEffect(() => {
     if (graphData.nodes.length === 0) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    projectsRef.current = graphData.projects;
 
     const nodes: GraphNode[] = graphData.nodes.map((n) => ({ ...n }));
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -144,13 +223,40 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
     simRef.current?.stop();
 
+    // Group nodes by project for cluster force
+    const groupCenters = new Map<string, { x: number; y: number }>();
+    graphData.projects.forEach((p, i) => {
+      const angle = (i / graphData.projects.length) * Math.PI * 2;
+      groupCenters.set(p.id, {
+        x: canvas.width / 2 + Math.cos(angle) * 200,
+        y: canvas.height / 2 + Math.sin(angle) * 200,
+      });
+    });
+
     const sim = d3Force
       .forceSimulation<GraphNode>(nodes)
-      .force('link', d3Force.forceLink<GraphNode, GraphLink>(links).id((d) => d.id).distance(80).strength(0.4))
-      .force('charge', d3Force.forceManyBody().strength(-200))
-      .force('center', d3Force.forceCenter(canvas.width / 2, canvas.height / 2))
-      .force('collision', d3Force.forceCollide(14))
-      .alphaDecay(0.02)
+      .force(
+        'link',
+        d3Force
+          .forceLink<GraphNode, GraphLink>(links)
+          .id((d) => d.id)
+          .distance((l) => 60 + (1 - (l as GraphLink).value) * 80)
+          .strength((l) => (l as GraphLink).value * 0.8)
+      )
+      .force('charge', d3Force.forceManyBody().strength(-180).distanceMax(300))
+      .force('center', d3Force.forceCenter(canvas.width / 2, canvas.height / 2).strength(0.05))
+      .force('collision', d3Force.forceCollide(NODE_RADIUS + 4))
+      // Cluster force: pull nodes toward their project center
+      .force('cluster', () => {
+        const alpha = sim.alpha();
+        for (const node of nodesRef.current) {
+          const center = groupCenters.get(node.group ?? '');
+          if (!center) continue;
+          node.vx = (node.vx ?? 0) + (center.x - (node.x ?? 0)) * 0.015 * alpha;
+          node.vy = (node.vy ?? 0) + (center.y - (node.y ?? 0)) * 0.015 * alpha;
+        }
+      })
+      .alphaDecay(0.015)
       .on('tick', draw);
 
     simRef.current = sim;
@@ -159,14 +265,14 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
     const selection = d3Selection.select(canvas);
     const zoom = d3Zoom
       .zoom<HTMLCanvasElement, unknown>()
-      .scaleExtent([0.1, 8])
+      .scaleExtent([0.05, 10])
       .on('zoom', (event) => {
         transformRef.current = event.transform;
         draw();
       });
     selection.call(zoom);
 
-    // Click + hover
+    // Interaction
     const getNode = (event: MouseEvent): GraphNode | null => {
       const rect = canvas.getBoundingClientRect();
       const mx = (event.clientX - rect.left - transformRef.current.x) / transformRef.current.k;
@@ -174,7 +280,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       for (const n of nodesRef.current) {
         const dx = (n.x ?? 0) - mx;
         const dy = (n.y ?? 0) - my;
-        if (Math.sqrt(dx * dx + dy * dy) < 10) return n;
+        if (Math.sqrt(dx * dx + dy * dy) < 12) return n;
       }
       return null;
     };
@@ -194,11 +300,9 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       sim.stop();
       canvas.onclick = null;
       canvas.onmousemove = null;
-      cancelAnimationFrame(animFrameRef.current);
     };
   }, [graphData, draw, onNodeClick]);
 
-  // Resize observer
   useEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
@@ -249,43 +353,57 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         </button>
       </div>
 
-      {graphData.projects.length > 0 && (
-        <div className="flex gap-3 mb-3 flex-wrap shrink-0">
-          {graphData.projects.map((p) => (
-            <div key={p.id} className="flex items-center gap-1.5 text-xs text-gray-500">
-              <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.color_tag ?? '#6B7280' }} />
-              {p.name}
-            </div>
-          ))}
+      {/* Legend */}
+      <div className="flex gap-4 mb-3 flex-wrap shrink-0">
+        {graphData.projects.map((p) => (
+          <div key={p.id} className="flex items-center gap-1.5 text-xs text-gray-500">
+            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.color_tag ?? '#6B7280' }} />
+            {p.name}
+          </div>
+        ))}
+        {graphData.nodes.some((n) => n.group === 'unassigned') && (
           <div className="flex items-center gap-1.5 text-xs text-gray-500">
-            <div className="w-2.5 h-2.5 rounded-full bg-gray-700" />
+            <div className="w-2.5 h-2.5 rounded-full bg-gray-600" />
             Unassigned
           </div>
+        )}
+        <div className="flex items-center gap-3 ml-auto">
+          <div className="flex items-center gap-1.5 text-xs text-gray-600">
+            <div className="w-4 h-0.5 bg-yellow-400/70 rounded" />
+            name match
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-gray-600">
+            <div className="w-4 h-0.5 bg-indigo-400/70 rounded" />
+            content match
+          </div>
         </div>
-      )}
+      </div>
 
       <div
         ref={containerRef}
         className="flex-1 bg-gray-950 rounded-xl border border-gray-800 overflow-hidden relative"
         style={{ minHeight: 400 }}
       >
-        {loading ? (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm z-10">
             Loading graph…
           </div>
-        ) : graphData.nodes.length === 0 ? (
+        )}
+        {!loading && graphData.nodes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 text-sm gap-2">
             <p>No files yet.</p>
-            <p className="text-xs">Sync Drive, then click <strong className="text-gray-400">Crawl &amp; Connect</strong>.</p>
+            <p className="text-xs">Sync Drive files to see the graph.</p>
           </div>
-        ) : null}
+        )}
         <canvas
           ref={canvasRef}
-          className="w-full h-full"
-          style={{ display: graphData.nodes.length > 0 && !loading ? 'block' : 'none' }}
+          className="w-full h-full block"
+          style={{ opacity: loading || graphData.nodes.length === 0 ? 0 : 1 }}
         />
       </div>
-      <p className="text-xs text-gray-700 mt-1.5 shrink-0">Scroll to zoom · drag to pan · click node to open</p>
+      <p className="text-xs text-gray-700 mt-1.5 shrink-0">
+        Scroll out → cluster view · scroll in → nodes · click node to open
+      </p>
     </div>
   );
 };
