@@ -1,15 +1,24 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { ConnectDrive } from '../Drive/ConnectDrive';
-import { FileList } from '../Files/FileList';
-import { ProjectPanel } from '../Projects/ProjectPanel';
-import { GraphView } from '../Graph/GraphView';
-import { FileEditor } from '../Editor/FileEditor';
+import { FileExplorer } from '../Explorer/FileExplorer';
 import { api } from '../../utils/api';
 import { DBFile, Project } from '../../types';
 
-type Tab = 'files' | 'projects' | 'graph';
+const FileEditor = lazy(() =>
+  import('../Editor/FileEditor').then((m) => ({ default: m.FileEditor }))
+);
+const GraphView = lazy(() =>
+  import('../Graph/GraphView').then((m) => ({ default: m.GraphView }))
+);
+
+interface OpenTab {
+  id: string;
+  name: string;
+}
+
+type View = 'editor' | 'graph';
 
 export const Dashboard = () => {
   const { user, logout } = useAuth();
@@ -19,11 +28,12 @@ export const Dashboard = () => {
   const [files, setFiles] = useState<DBFile[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [banner, setBanner] = useState('');
-  const [tab, setTab] = useState<Tab>('files');
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
 
-  // Editor state — opens when a node is clicked in graph or file is selected
-  const [editorFile, setEditorFile] = useState<{ id: string; name: string } | null>(null);
-  const [crawlTrigger] = useState(0);
+  const [tabs, setTabs] = useState<OpenTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [view, setView] = useState<View>('editor');
 
   const fetchDriveStatus = useCallback(async () => {
     try {
@@ -76,92 +86,171 @@ export const Dashboard = () => {
     }
   }, [searchParams, setSearchParams, fetchFiles]);
 
-  const handleNodeClick = (nodeId: string, nodeName: string) => {
-    setEditorFile({ id: nodeId, name: nodeName });
+  const handleFileOpen = (file: DBFile) => {
+    setView('editor');
+    setActiveTabId(file.id);
+    setTabs((prev) => {
+      if (prev.some((t) => t.id === file.id)) return prev;
+      return [...prev, { id: file.id, name: file.file_name }];
+    });
   };
 
+  const handleTabClose = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTabs((prev) => {
+      const next = prev.filter((t) => t.id !== id);
+      if (activeTabId === id) {
+        setActiveTabId(next[next.length - 1]?.id ?? null);
+      }
+      return next;
+    });
+  };
+
+  const handleSyncDrive = async () => {
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const res = await api.post('/drive/sync');
+      setSyncMsg(res.data.message);
+      fetchFiles();
+    } catch {
+      setSyncMsg('Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleNodeClick = (nodeId: string, nodeName: string) => {
+    handleFileOpen({ id: nodeId, file_name: nodeName } as DBFile);
+    setView('editor');
+  };
+
+  const activeFile = files.find((f) => f.id === activeTabId);
+
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col">
-      <header className="border-b border-gray-800 px-6 py-4 flex items-center justify-between shrink-0">
-        <h1 className="text-xl font-bold tracking-tight">Neural Network</h1>
+    <div className="h-screen flex flex-col bg-gray-950 text-white overflow-hidden">
+      {/* Title bar */}
+      <header className="border-b border-gray-800 px-4 py-2 flex items-center justify-between shrink-0 bg-gray-900">
         <div className="flex items-center gap-4">
-          <span className="text-gray-400 text-sm hidden sm:block">{user?.email}</span>
-          <button
-            onClick={logout}
-            className="text-sm text-gray-400 hover:text-white transition-colors"
-          >
+          <span className="text-sm font-bold tracking-tight">Neural Network</span>
+          {/* View toggles */}
+          <div className="flex items-center gap-1 bg-gray-800 rounded-md p-0.5">
+            <button
+              onClick={() => setView('editor')}
+              className={`px-3 py-1 text-xs rounded transition-colors ${view === 'editor' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200'}`}
+            >
+              Editor
+            </button>
+            <button
+              onClick={() => setView('graph')}
+              className={`px-3 py-1 text-xs rounded transition-colors ${view === 'graph' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200'}`}
+            >
+              Graph
+            </button>
+          </div>
+          {syncMsg && <span className="text-xs text-gray-500">{syncMsg}</span>}
+          {banner && <span className="text-xs text-blue-400">{banner}</span>}
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-gray-500 text-xs hidden sm:block">{user?.email}</span>
+          <button onClick={logout} className="text-xs text-gray-500 hover:text-white transition-colors">
             Logout
           </button>
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col max-w-7xl w-full mx-auto px-6 py-6 min-h-0">
-        {banner && (
-          <div className="mb-4 p-3 bg-blue-900/40 border border-blue-700 text-blue-300 rounded-lg text-sm shrink-0">
-            {banner}
-          </div>
-        )}
-
-        {!driveConnected && (
-          <div className="mb-4 shrink-0">
-            <h2 className="text-2xl font-semibold mb-1">Welcome, {user?.username}</h2>
-            <p className="text-gray-500 text-sm">Your file neural network</p>
-          </div>
-        )}
-
-        {driveConnected === null ? (
-          <div className="text-gray-600 text-sm">Loading…</div>
-        ) : !driveConnected ? (
+      {driveConnected === null ? (
+        <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">Loading…</div>
+      ) : !driveConnected ? (
+        <div className="flex-1 flex items-center justify-center p-8">
           <ConnectDrive onConnected={() => { setDriveConnected(true); fetchFiles(); }} />
-        ) : (
-          <div className="flex flex-col flex-1 min-h-0">
-            <div className="flex gap-1 mb-4 border-b border-gray-800 shrink-0">
-              {(['files', 'projects', 'graph'] as Tab[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
-                    tab === t
-                      ? 'border-blue-500 text-white'
-                      : 'border-transparent text-gray-500 hover:text-gray-300'
-                  }`}
-                >
-                  {t}
-                  {t === 'files' && <span className="ml-1.5 text-xs text-gray-600">({files.length})</span>}
-                  {t === 'projects' && <span className="ml-1.5 text-xs text-gray-600">({projects.length})</span>}
-                </button>
-              ))}
-            </div>
+        </div>
+      ) : (
+        <div className="flex-1 flex overflow-hidden">
+          {/* Sidebar — File Explorer */}
+          <aside className="w-56 shrink-0 border-r border-gray-800 flex flex-col overflow-hidden">
+            <FileExplorer
+              files={files}
+              projects={projects}
+              openFileIds={tabs.map((t) => t.id)}
+              activeFileId={activeTabId}
+              onFileOpen={handleFileOpen}
+              onRefresh={refresh}
+              onSyncDrive={handleSyncDrive}
+              syncing={syncing}
+            />
+          </aside>
 
-            <div className={`flex gap-4 flex-1 min-h-0 ${tab === 'graph' ? 'flex-row' : 'flex-col'}`}>
-              <div className={tab === 'graph' ? 'flex-1 min-w-0 min-h-0' : ''}>
-                {tab === 'files' && (
-                  <FileList files={files} onSynced={refresh} onFileClick={(id, name) => setEditorFile({ id, name })} />
-                )}
-                {tab === 'projects' && (
-                  <ProjectPanel projects={projects} files={files} onChanged={refresh} />
-                )}
-                {tab === 'graph' && (
-                  <GraphView
-                    onNodeClick={handleNodeClick}
-                    crawlTrigger={crawlTrigger}
-                  />
-                )}
-              </div>
-
-              {editorFile && (
-                <div className={tab === 'graph' ? 'w-[480px] shrink-0 min-h-0' : 'h-96 mt-2'}>
-                  <FileEditor
-                    fileId={editorFile.id}
-                    fileName={editorFile.name}
-                    onClose={() => setEditorFile(null)}
-                  />
+          {/* Main area */}
+          <main className="flex-1 flex flex-col overflow-hidden">
+            {view === 'editor' ? (
+              <>
+                {/* Tab bar */}
+                <div className="flex items-center border-b border-gray-800 bg-gray-900 shrink-0 overflow-x-auto">
+                  {tabs.map((tab) => (
+                    <div
+                      key={tab.id}
+                      onClick={() => setActiveTabId(tab.id)}
+                      className={`flex items-center gap-2 px-3 py-2 text-xs cursor-pointer border-r border-gray-800 shrink-0 group transition-colors ${
+                        activeTabId === tab.id
+                          ? 'bg-gray-950 text-white border-t border-t-blue-500'
+                          : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
+                      }`}
+                    >
+                      <span className="max-w-[120px] truncate">{tab.name}</span>
+                      <button
+                        onClick={(e) => handleTabClose(tab.id, e)}
+                        className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-white transition-all ml-0.5 leading-none"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  {tabs.length === 0 && (
+                    <span className="text-xs text-gray-700 px-4 py-2">
+                      Select a file from the explorer →
+                    </span>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
-        )}
-      </main>
+
+                {/* Editor */}
+                <div className="flex-1 overflow-hidden">
+                  {activeTabId ? (
+                    <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-600 text-sm">Loading editor…</div>}>
+                      <FileEditor
+                        key={activeTabId}
+                        fileId={activeTabId}
+                        fileName={activeFile?.file_name ?? tabs.find((t) => t.id === activeTabId)?.name ?? ''}
+                        onClose={() => {
+                          setTabs((prev) => {
+                            const next = prev.filter((t) => t.id !== activeTabId);
+                            setActiveTabId(next[next.length - 1]?.id ?? null);
+                            return next;
+                          });
+                        }}
+                        onSaved={fetchFiles}
+                      />
+                    </Suspense>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full text-gray-700 text-sm gap-2">
+                      <p className="text-4xl">📁</p>
+                      <p>Open a file from the explorer</p>
+                      <p className="text-xs text-gray-600">or click <strong className="text-gray-500">+ New file</strong> to create one</p>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              /* Graph view */
+              <div className="flex-1 overflow-hidden p-4">
+                <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-600 text-sm">Loading graph…</div>}>
+                  <GraphView onNodeClick={handleNodeClick} crawlTrigger={0} />
+                </Suspense>
+              </div>
+            )}
+          </main>
+        </div>
+      )}
     </div>
   );
 };

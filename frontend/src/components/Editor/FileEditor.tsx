@@ -7,6 +7,7 @@ interface Props {
   fileId: string;
   fileName: string;
   onClose: () => void;
+  onSaved?: () => void;
 }
 
 const detectLanguage = (fileName: string, fileType: string | null): string => {
@@ -26,7 +27,7 @@ const detectLanguage = (fileName: string, fileType: string | null): string => {
   return map[ext ?? ''] ?? 'plaintext';
 };
 
-export const FileEditor = ({ fileId, fileName, onClose }: Props) => {
+export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Props) => {
   const [content, setContent] = useState<string | null>(null);
   const [fileType, setFileType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +58,7 @@ export const FileEditor = ({ fileId, fileName, onClose }: Props) => {
       await api.put(`/files/${fileId}`, { content });
       setDirty(false);
       setSaved(true);
+      onSaved?.();
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       const axiosErr = err as AxiosError<{ message: string }>;
@@ -69,13 +71,13 @@ export const FileEditor = ({ fileId, fileName, onClose }: Props) => {
   const lang = detectLanguage(fileName, fileType);
 
   return (
-    <div className="flex flex-col h-full bg-gray-900 rounded-xl border border-gray-700 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-700 bg-gray-800 shrink-0">
+    <div className="flex flex-col h-full bg-gray-950 overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-1.5 border-b border-gray-800 bg-gray-900 shrink-0">
         <div className="flex items-center gap-3">
-          <span className="text-sm text-white font-medium truncate max-w-xs">{fileName}</span>
-          {dirty && <span className="w-2 h-2 rounded-full bg-amber-400" title="Unsaved changes" />}
+          {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="Unsaved changes" />}
           {saved && <span className="text-xs text-green-400">Saved</span>}
           {error && <span className="text-xs text-red-400">{error}</span>}
+          <span className="text-xs text-gray-500">{lang}</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -83,13 +85,7 @@ export const FileEditor = ({ fileId, fileName, onClose }: Props) => {
             disabled={!dirty || saving}
             className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-md transition-colors"
           >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors text-sm px-2 py-1 rounded"
-          >
-            ✕
+            {saving ? 'Saving…' : 'Save  ⌘S'}
           </button>
         </div>
       </div>
