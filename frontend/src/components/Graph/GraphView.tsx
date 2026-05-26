@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3Force from 'd3-force';
 import * as d3Zoom from 'd3-zoom';
 import * as d3Selection from 'd3-selection';
-import { api } from '../../utils/api';
+import { api, crawlerApi } from '../../utils/api';
 import { AxiosError } from 'axios';
 
 interface GraphNode extends d3Force.SimulationNodeDatum {
@@ -70,48 +70,139 @@ const computeConnectedComponents = (nodes: GraphNode[], links: GraphLink[]): Map
   return result;
 };
 
-const assignGroup = (
+const facetForMode = (
   node: GraphNode,
   mode: ClusterMode,
   componentMap: Map<string, string>,
   projectNameById: Map<string, string>,
-): { id: string; label: string; color: string } => {
+): { id: string; label: string } | null => {
   if (mode === 'project') {
-    if (node.project_id) {
-      const name = projectNameById.get(node.project_id) ?? node.project_id;
-      return { id: `p:${node.project_id}`, label: name, color: hashColor(node.project_id) };
-    }
-    return { id: 'unassigned', label: 'Unassigned', color: '#4B5563' };
+    if (!node.project_id) return null;
+    const name = projectNameById.get(node.project_id) ?? node.project_id;
+    return { id: `p:${node.project_id}`, label: name };
   }
   if (mode === 'type') {
     const t = typeLabel(node.file_type);
-    return { id: `t:${t}`, label: t, color: hashColor(t) };
+    return { id: `t:${t}`, label: t };
   }
   if (mode === 'connected') {
     const comp = componentMap.get(node.id) ?? node.id;
-    return { id: `c:${comp}`, label: 'Cluster', color: hashColor(comp) };
+    return { id: `c:${comp}`, label: 'Cluster' };
   }
-  // folder (default)
+  // folder
   if (node.project_id) {
     const name = projectNameById.get(node.project_id) ?? node.project_id;
-    return { id: `p:${node.project_id}`, label: name, color: hashColor(node.project_id) };
+    return { id: `p:${node.project_id}`, label: name };
   }
   if (node.drive_path) {
     const top = node.drive_path.split('/').filter(Boolean)[0];
-    if (top) return { id: `drive:${top}`, label: top, color: hashColor(top) };
+    if (top) return { id: `drive:${top}`, label: top };
   }
   if (node.github_repo) {
-    return { id: `gh:${node.github_repo}`, label: node.github_repo, color: hashColor(node.github_repo) };
+    return { id: `gh:${node.github_repo}`, label: node.github_repo };
   }
-  return { id: 'unassigned', label: 'Unassigned', color: '#4B5563' };
+  return null;
 };
+
+const assignGroup = (
+  node: GraphNode,
+  modes: Set<ClusterMode>,
+  componentMap: Map<string, string>,
+  projectNameById: Map<string, string>,
+): { id: string; label: string; color: string } => {
+  if (modes.size === 0) {
+    return { id: 'unassigned', label: 'Unassigned', color: '#4B5563' };
+  }
+  const order: ClusterMode[] = ['folder', 'project', 'type', 'connected'];
+  const facets = order
+    .filter((m) => modes.has(m))
+    .map((m) => facetForMode(node, m, componentMap, projectNameById))
+    .filter((f): f is { id: string; label: string } => f !== null);
+
+  if (facets.length === 0) {
+    return { id: 'unassigned', label: 'Unassigned', color: '#4B5563' };
+  }
+  const id = facets.map((f) => f.id).join('|');
+  const label = facets.map((f) => f.label).join(' · ');
+  return { id, label, color: hashColor(id) };
+};
+
+type LineKind = 'semantic' | 'folder' | 'project' | 'type';
+
+const LINE_KINDS: { id: LineKind; label: string; color: string }[] = [
+  { id: 'semantic', label: 'Semantic',     color: '#6366F1' }, // indigo
+  { id: 'folder',   label: 'Same folder',  color: '#34D399' }, // emerald
+  { id: 'project',  label: 'Same project', color: '#F59E0B' }, // amber
+  { id: 'type',     label: 'Same type',    color: '#EC4899' }, // pink
+];
+
+// Perpendicular offset (in canvas pixels) per kind. Lets multiple kinds of
+// links between the same pair render as visually distinct arcs instead of
+// stacking on top of each other (cheap edge-bundling-style deconfliction).
+const LINE_KIND_OFFSET: Record<LineKind, number> = {
+  semantic: 0,
+  folder: 9,
+  project: -9,
+  type: 18,
+};
+
+const LINE_KIND_COLOR: Record<LineKind, string> = Object.fromEntries(
+  LINE_KINDS.map((k) => [k.id, k.color])
+) as Record<LineKind, string>;
 
 interface GraphLink extends d3Force.SimulationLinkDatum<GraphNode> {
   source: string | GraphNode;
   target: string | GraphNode;
   value: number;
   type: string;
+  kind: LineKind;
 }
+
+const folderKey = (n: GraphNode): string | null => {
+  if (n.drive_path) {
+    const top = n.drive_path.split('/').filter(Boolean)[0];
+    return top ? `drive:${top}` : null;
+  }
+  if (n.github_repo) return `gh:${n.github_repo}`;
+  return null;
+};
+
+// Build structural links by grouping nodes on a key. Capped per node to avoid
+// dense hairballs on large groups: each node connects to at most `capPerNode`
+// random peers in its group.
+const deriveGroupLinks = (
+  nodes: GraphNode[],
+  keyFn: (n: GraphNode) => string | null,
+  kind: LineKind,
+  capPerNode = 6,
+  weight = 0.35,
+): GraphLink[] => {
+  const groups = new Map<string, GraphNode[]>();
+  for (const n of nodes) {
+    const k = keyFn(n);
+    if (!k) continue;
+    const arr = groups.get(k);
+    if (arr) arr.push(n);
+    else groups.set(k, [n]);
+  }
+  const out: GraphLink[] = [];
+  const seen = new Set<string>();
+  for (const peers of groups.values()) {
+    if (peers.length < 2) continue;
+    for (const a of peers) {
+      const pool = peers.filter((p) => p.id !== a.id);
+      const take = Math.min(capPerNode, pool.length);
+      for (let i = 0; i < take; i++) {
+        const b = pool[i];
+        const pair = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+        if (seen.has(pair)) continue;
+        seen.add(pair);
+        out.push({ source: a.id, target: b.id, value: weight, type: kind, kind });
+      }
+    }
+  }
+  return out;
+};
 
 interface GraphData {
   nodes: GraphNode[];
@@ -143,13 +234,18 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const [crawlMsg, setCrawlMsg] = useState('');
   const [showClusterLabels, setShowClusterLabels] = useState(true);
   const [showLinks, setShowLinks] = useState(true);
-  const [linkStrengthFilter, setLinkStrengthFilter] = useState(0.2);
-  const [clusterMode, setClusterMode] = useState<ClusterMode>('folder');
+  const [linkStrengthFilter, setLinkStrengthFilter] = useState(0.05);
+  const [clusterModes, setClusterModes] = useState<Set<ClusterMode>>(() => new Set(['folder']));
+  const [clusterMenuOpen, setClusterMenuOpen] = useState(false);
+  const [activeLineKinds, setActiveLineKinds] = useState<Set<LineKind>>(() => new Set(['semantic']));
+  const [lineMenuOpen, setLineMenuOpen] = useState(false);
   const showLinksRef = useRef(true);
-  const linkFilterRef = useRef(0.2);
+  const linkFilterRef = useRef(0.05);
+  const activeLineKindsRef = useRef<Set<LineKind>>(activeLineKinds);
 
   useEffect(() => { showLinksRef.current = showLinks; }, [showLinks]);
   useEffect(() => { linkFilterRef.current = linkStrengthFilter; }, [linkStrengthFilter]);
+  useEffect(() => { activeLineKindsRef.current = activeLineKinds; }, [activeLineKinds]);
 
   const fetchGraph = useCallback(async () => {
     setLoading(true);
@@ -299,8 +395,10 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       const baseAlpha = isClustered ? 0.08 : 0.14;
       const dimAlpha = 0.04;
       const hotAlpha = 0.95;
+      const active = activeLineKindsRef.current;
 
       for (const link of linksRef.current) {
+        if (!active.has(link.kind)) continue;
         const s = link.source as GraphNode;
         const tgt = link.target as GraphNode;
         if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
@@ -318,10 +416,29 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           alpha = dimAlpha;
         }
 
+        const hex = LINE_KIND_COLOR[link.kind] ?? '#6366F1';
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+
+        // Perpendicular-offset arc so multiple kinds of edges between the
+        // same pair don't stack on top of each other.
+        const offset = LINE_KIND_OFFSET[link.kind] ?? 0;
         ctx.beginPath();
         ctx.moveTo(s.x, s.y);
-        ctx.lineTo(tgt.x, tgt.y);
-        ctx.strokeStyle = `rgba(99,102,241,${alpha})`;
+        if (offset === 0) {
+          ctx.lineTo(tgt.x, tgt.y);
+        } else {
+          const dx = tgt.x - s.x;
+          const dy = tgt.y - s.y;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const mx = (s.x + tgt.x) / 2 + nx * offset;
+          const my = (s.y + tgt.y) / 2 + ny * offset;
+          ctx.quadraticCurveTo(mx, my, tgt.x, tgt.y);
+        }
+        ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
         ctx.lineWidth = incident
           ? Math.max(1.2, strength * 2.6)
           : Math.max(0.35, strength * 1.1);
@@ -390,19 +507,32 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
     const nodes: GraphNode[] = graphData.nodes.map((n) => ({ ...n }));
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
-    const links: GraphLink[] = graphData.links
+    const semanticLinks: GraphLink[] = graphData.links
       .map((l) => ({
         ...l,
+        kind: 'semantic' as LineKind,
         source: nodeById.get(l.source as string) ?? l.source,
         target: nodeById.get(l.target as string) ?? l.target,
       }))
       .filter((l) => l.source && l.target);
 
-    // Reassign groups based on selected clusterMode.
+    // Derived structural layers — toggleable independently of semantic.
+    const folderLinks  = deriveGroupLinks(nodes, folderKey, 'folder',  6, 0.35);
+    const projectLinks = deriveGroupLinks(nodes, (n) => n.project_id ? `p:${n.project_id}` : null, 'project', 6, 0.40);
+    const typeLinks    = deriveGroupLinks(nodes, (n) => n.file_type ? `t:${typeLabel(n.file_type)}` : null, 'type', 4, 0.25);
+
+    const links: GraphLink[] = [
+      ...semanticLinks,
+      ...folderLinks.map((l) => ({ ...l, source: nodeById.get(l.source as string) ?? l.source, target: nodeById.get(l.target as string) ?? l.target })),
+      ...projectLinks.map((l) => ({ ...l, source: nodeById.get(l.source as string) ?? l.source, target: nodeById.get(l.target as string) ?? l.target })),
+      ...typeLinks.map((l) => ({ ...l, source: nodeById.get(l.source as string) ?? l.source, target: nodeById.get(l.target as string) ?? l.target })),
+    ].filter((l) => l.source && l.target);
+
+    // Reassign groups based on active cluster modes.
     const projectNameById = new Map(graphData.projects.map((p) => [p.id, p.name]));
-    const componentMap = clusterMode === 'connected' ? computeConnectedComponents(nodes, links) : new Map<string, string>();
+    const componentMap = clusterModes.has('connected') ? computeConnectedComponents(nodes, links) : new Map<string, string>();
     for (const n of nodes) {
-      const g = assignGroup(n, clusterMode, componentMap, projectNameById);
+      const g = assignGroup(n, clusterModes, componentMap, projectNameById);
       n.group = g.id;
       n.color = g.color;
     }
@@ -509,7 +639,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       canvas.onclick = null;
       canvas.onmousemove = null;
     };
-  }, [graphData, draw, onNodeClick, clusterMode]);
+  }, [graphData, draw, onNodeClick, clusterModes]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -532,21 +662,43 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
     setCrawling(true);
     setCrawlMsg('Crawling…');
     try {
-      let totalCrawled = 0;
-      let rounds = 0;
-      const maxRounds = 60; // hard safety cap (40 files * 60 = 2400)
-      while (rounds < maxRounds) {
-        const res = await api.post('/crawler/run');
-        const data = res.data?.data ?? {};
-        totalCrawled += data.crawled ?? 0;
-        const remaining = data.remaining ?? 0;
-        setCrawlMsg(
-          remaining > 0
-            ? `Crawling… ${totalCrawled} done · ${remaining} pending`
-            : res.data.message
-        );
-        if (remaining === 0) break;
-        rounds++;
+      // Solo crawler worker exposes /run-all (server loops + waitUntil). Falls
+      // back to /crawler/run loop when frontend points at the main API.
+      const usingSoloWorker = !!import.meta.env.VITE_CRAWLER_URL;
+      if (usingSoloWorker) {
+        let totalCrawled = 0;
+        let rounds = 0;
+        while (rounds < 40) {
+          const res = await crawlerApi.post('/run-all');
+          const data = res.data?.data ?? {};
+          totalCrawled += data.crawled ?? 0;
+          setCrawlMsg(
+            data.done
+              ? res.data.message
+              : `Crawling… ${totalCrawled} done · ${data.remaining ?? 0} pending`
+          );
+          if (data.done) break;
+          // Worker took first batch + kicked background; poll again after a beat.
+          await new Promise((r) => setTimeout(r, 3000));
+          rounds++;
+        }
+      } else {
+        let totalCrawled = 0;
+        let rounds = 0;
+        const maxRounds = 60;
+        while (rounds < maxRounds) {
+          const res = await api.post('/crawler/run');
+          const data = res.data?.data ?? {};
+          totalCrawled += data.crawled ?? 0;
+          const remaining = data.remaining ?? 0;
+          setCrawlMsg(
+            remaining > 0
+              ? `Crawling… ${totalCrawled} done · ${remaining} pending`
+              : res.data.message
+          );
+          if (remaining === 0) break;
+          rounds++;
+        }
       }
       fetchGraph();
     } catch (err) {
@@ -576,21 +728,142 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       </div>
 
       <div className="flex gap-4 mb-3 flex-wrap shrink-0">
-        <div className="inline-flex bg-gray-900 border border-gray-800 rounded-md p-0.5 shrink-0">
-          {CLUSTER_MODES.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setClusterMode(m.id)}
-              className={`px-3 py-1 text-[11px] rounded transition-colors ${
-                clusterMode === m.id
-                  ? 'bg-gray-700 text-white'
-                  : 'text-gray-500 hover:text-gray-300'
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
+        <div className="relative shrink-0">
+          <button
+            onClick={() => setClusterMenuOpen((o) => !o)}
+            className="inline-flex items-center gap-1.5 bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 text-[11px] rounded-md px-3 py-1.5 transition-colors"
+          >
+            <span>
+              Cluster:{' '}
+              <span className="text-gray-500">
+                {clusterModes.size === 0
+                  ? 'none'
+                  : CLUSTER_MODES.filter((m) => clusterModes.has(m.id)).map((m) => m.label).join(' · ')}
+              </span>
+            </span>
+            <svg width="10" height="10" viewBox="0 0 10 10" className="text-gray-500"><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          {clusterMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setClusterMenuOpen(false)} />
+              <div className="absolute left-0 top-full mt-1 z-20 bg-gray-900 border border-gray-800 rounded-md shadow-xl py-1 min-w-[160px]">
+                {CLUSTER_MODES.map((m) => {
+                  const active = clusterModes.has(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() =>
+                        setClusterModes((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(m.id)) next.delete(m.id);
+                          else next.add(m.id);
+                          return next;
+                        })
+                      }
+                      className="flex items-center gap-2 w-full px-3 py-1.5 text-[11px] text-gray-300 hover:bg-gray-800 transition-colors"
+                    >
+                      <span
+                        className={`w-3.5 h-3.5 rounded border flex items-center justify-center ${
+                          active ? 'bg-indigo-500 border-indigo-500' : 'border-gray-600 bg-gray-800'
+                        }`}
+                      >
+                        {active && (
+                          <svg width="9" height="9" viewBox="0 0 9 9"><path d="M1.5 4.5L3.5 6.5L7.5 2.5" stroke="white" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        )}
+                      </span>
+                      {m.label}
+                    </button>
+                  );
+                })}
+                <div className="border-t border-gray-800 mt-1 pt-1 flex gap-1 px-2 pb-1">
+                  <button
+                    onClick={() => setClusterModes(new Set(CLUSTER_MODES.map((m) => m.id)))}
+                    className="flex-1 text-[10px] text-gray-500 hover:text-gray-300 py-1"
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => setClusterModes(new Set())}
+                    className="flex-1 text-[10px] text-gray-500 hover:text-gray-300 py-1"
+                  >
+                    None
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
+
+        <div className="relative shrink-0">
+          <button
+            onClick={() => setLineMenuOpen((o) => !o)}
+            className="inline-flex items-center gap-1.5 bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 text-[11px] rounded-md px-3 py-1.5 transition-colors"
+          >
+            <span>
+              Lines:{' '}
+              <span className="text-gray-500">
+                {activeLineKinds.size === 0
+                  ? 'off'
+                  : LINE_KINDS.filter((k) => activeLineKinds.has(k.id)).map((k) => k.label).join(' · ')}
+              </span>
+            </span>
+            <svg width="10" height="10" viewBox="0 0 10 10" className="text-gray-500"><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          {lineMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setLineMenuOpen(false)} />
+              <div className="absolute left-0 top-full mt-1 z-20 bg-gray-900 border border-gray-800 rounded-md shadow-xl py-1 min-w-[180px]">
+                {LINE_KINDS.map((k) => {
+                  const active = activeLineKinds.has(k.id);
+                  return (
+                    <button
+                      key={k.id}
+                      onClick={() => {
+                        setActiveLineKinds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(k.id)) next.delete(k.id);
+                          else next.add(k.id);
+                          return next;
+                        });
+                        requestAnimationFrame(draw);
+                      }}
+                      className="flex items-center gap-2 w-full px-3 py-1.5 text-[11px] text-gray-300 hover:bg-gray-800 transition-colors"
+                    >
+                      <span
+                        className="w-3.5 h-3.5 rounded border flex items-center justify-center"
+                        style={{
+                          backgroundColor: active ? k.color : 'transparent',
+                          borderColor: active ? k.color : '#4B5563',
+                        }}
+                      >
+                        {active && (
+                          <svg width="9" height="9" viewBox="0 0 9 9"><path d="M1.5 4.5L3.5 6.5L7.5 2.5" stroke="white" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        )}
+                      </span>
+                      <span className="flex-1 text-left">{k.label}</span>
+                      <span className="w-5 h-0.5 rounded" style={{ backgroundColor: k.color }} />
+                    </button>
+                  );
+                })}
+                <div className="border-t border-gray-800 mt-1 pt-1 flex gap-1 px-2 pb-1">
+                  <button
+                    onClick={() => { setActiveLineKinds(new Set(LINE_KINDS.map((k) => k.id))); requestAnimationFrame(draw); }}
+                    className="flex-1 text-[10px] text-gray-500 hover:text-gray-300 py-1"
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => { setActiveLineKinds(new Set()); requestAnimationFrame(draw); }}
+                    className="flex-1 text-[10px] text-gray-500 hover:text-gray-300 py-1"
+                  >
+                    None
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
         <div className="flex items-center gap-3 ml-auto flex-wrap">
           <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:text-gray-400">
             <input
@@ -616,17 +889,23 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
               type="range"
               min={0}
               max={0.9}
-              step={0.05}
+              step={0.01}
               value={linkStrengthFilter}
               onChange={(e) => { setLinkStrengthFilter(parseFloat(e.target.value)); requestAnimationFrame(draw); }}
               className="w-24 accent-indigo-500"
             />
             <span className="w-8 text-right tabular-nums">{linkStrengthFilter.toFixed(2)}</span>
           </label>
-          <div className="flex items-center gap-1.5 text-xs text-gray-600">
-            <div className="w-4 h-0.5 bg-indigo-400/70 rounded" />
-            subject match
-          </div>
+          {[...activeLineKinds].length > 0 && (
+            <div className="flex items-center gap-2 text-xs text-gray-600 flex-wrap">
+              {LINE_KINDS.filter((k) => activeLineKinds.has(k.id)).map((k) => (
+                <span key={k.id} className="inline-flex items-center gap-1.5">
+                  <span className="w-4 h-0.5 rounded" style={{ backgroundColor: k.color }} />
+                  {k.label}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

@@ -124,10 +124,7 @@ router.get('/:id', authMiddleware, async (c) => {
       .single();
     if (error || !data) throw new NotFoundError('File not found');
 
-    let file = data as FileRecord;
-
-    // If content is missing but we have a Drive file ID, try to fetch it
-    file = await loadFileContentIfMissing({ supabase, userId, env: c.env, file });
+    const file = data as FileRecord;
 
     return c.json({ success: true, message: 'File retrieved', data: { file } });
   } catch (err) { return onError(err, c); }

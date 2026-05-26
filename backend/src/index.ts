@@ -56,4 +56,12 @@ app.route('/api', apiRouter);
 
 app.notFound((c) => c.json({ success: false, message: 'Route not found' }, 404));
 
+// Global error handler — without this, an uncaught throw bypasses the CORS
+// middleware and Cloudflare returns a 503 with no Access-Control-Allow-Origin
+// header, which the browser surfaces as a CORS error.
+app.onError((err, c) => {
+  console.error('[Unhandled]', c.req.path, err instanceof Error ? `${err.name}: ${err.message}` : err);
+  return c.json({ success: false, message: 'Internal server error' }, 500);
+});
+
 export default app;

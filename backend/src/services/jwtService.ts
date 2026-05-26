@@ -27,6 +27,6 @@ export const generateTokenPair = async (
 });
 
 export const verifyToken = async (token: string, jwtSecret: string): Promise<JwtPayload> => {
-  const { payload } = await jwtVerify(token, secret(jwtSecret));
+  const { payload } = await jwtVerify(token, secret(jwtSecret), { algorithms: ['HS256'] });
   return payload as unknown as JwtPayload;
 };

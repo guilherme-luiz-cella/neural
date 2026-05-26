@@ -95,7 +95,7 @@ router.get('/', authMiddleware, async (c) => {
     // Subject (TF-IDF) links from crawler-produced connections only.
     const subjectLinks = settings.enable_semantic_matching
       ? dbConnections
-          .filter((c) => c.connection_type === 'semantic' && fileIdSet.has(c.file_1_id) && fileIdSet.has(c.file_2_id) && (c.similarity_score ?? 0) >= 0.1)
+          .filter((c) => c.connection_type === 'semantic' && fileIdSet.has(c.file_1_id) && fileIdSet.has(c.file_2_id) && (c.similarity_score ?? 0) >= 0.05)
           .map((c) => ({
             source: c.file_1_id,
             target: c.file_2_id,

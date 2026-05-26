@@ -1,0 +1,25 @@
+name = "neural-network-crawler"
+main = "src/index.ts"
+compatibility_date = "2024-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+FRONTEND_URL = "http://localhost:5173"
+
+# Cron Trigger: scheduled handler fires every 5 min in prod. Disabled in dev
+# (uncomment for local cron testing via `wrangler dev --test-scheduled`).
+# [triggers]
+# crons = ["*/5 * * * *"]
+
+[env.production.vars]
+FRONTEND_URL = "https://neural.cella.website,https://neural-network-3d7.pages.dev,*.neural-network-3d7.pages.dev,*.cella.website"
+
+[env.production.triggers]
+crons = ["*/5 * * * *"]
+
+# Secrets (set per env via `wrangler secret put NAME --env production`):
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_KEY
+#   JWT_SECRET
+#   GOOGLE_CLIENT_ID
+#   GOOGLE_CLIENT_SECRET
