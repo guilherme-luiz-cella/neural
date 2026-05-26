@@ -47,6 +47,12 @@ const onError = (err: unknown, c: Parameters<Parameters<typeof router.get>[1]>[0
 // GET /api/github — return OAuth URL
 router.get('/', authMiddleware, async (c) => {
   try {
+    if (!c.env.GITHUB_CLIENT_ID) {
+      return c.json({
+        success: false,
+        message: 'GitHub OAuth not configured. Run: wrangler secret put GITHUB_CLIENT_ID --env production',
+      }, 503);
+    }
     const { userId } = c.get('user');
     const origin = c.req.header('Origin') ?? c.env.FRONTEND_URL.split(',')[0];
     const state = await makeState(userId, origin, c.env.JWT_SECRET);

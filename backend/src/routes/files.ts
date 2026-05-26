@@ -51,6 +51,24 @@ router.get('/:id', authMiddleware, async (c) => {
       .eq('user_id', userId)
       .single();
     if (error || !data) throw new NotFoundError('File not found');
+
+    // If content is missing but we have a Drive file ID, try to fetch it
+    if (!data.content && data.google_drive_id && data.file_type) {
+      try {
+        const { default: crawlerService } = await import('../services/crawlerService.ts');
+        const supabase = db(c);
+        const accessToken = await getValidAccessToken(supabase, userId, c.env);
+        const fetchedContent = await crawlerService.fetchFileContent(data.google_drive_id, data.file_type, accessToken);
+        if (fetchedContent) {
+          // Update the file with fetched content
+          await supabase.from('files').update({ content: fetchedContent }).eq('id', id);
+          data.content = fetchedContent;
+        }
+      } catch {
+        // If fetching fails, return what we have (content might be null)
+      }
+    }
+
     return c.json({ success: true, message: 'File retrieved', data: { file: data } });
   } catch (err) { return onError(err, c); }
 });

@@ -30,6 +30,27 @@ export interface GHFile {
   path: string;
 }
 
+// Helper to handle rate limiting
+const handleRateLimit = (response: Response): void => {
+  const remaining = response.headers.get('X-RateLimit-Remaining');
+  const reset = response.headers.get('X-RateLimit-Reset');
+  if (remaining === '0' && reset) {
+    const resetTime = parseInt(reset, 10) * 1000;
+    const waitMs = Math.max(resetTime - Date.now(), 0);
+    console.warn(`[GitHub] Rate limit hit. Reset in ${Math.ceil(waitMs / 1000)}s`);
+  }
+};
+
+// Helper to parse GitHub error responses
+const parseGitHubError = async (response: Response): Promise<string> => {
+  try {
+    const data = await response.json<{ message?: string; documentation_url?: string }>();
+    return data.message || `GitHub API error: ${response.status}`;
+  } catch {
+    return `GitHub API error: ${response.status}`;
+  }
+};
+
 export const getAuthUrl = (clientId: string, redirectUri: string, state: string): string => {
   const p = new URLSearchParams({
     client_id: clientId,
@@ -50,13 +71,20 @@ export const exchangeCode = async (
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
   });
-  if (!res.ok) throw new Error('GitHub token exchange failed');
+  if (!res.ok) {
+    const error = await parseGitHubError(res);
+    throw new Error(`GitHub token exchange failed: ${error}`);
+  }
   return res.json<{ access_token: string; scope: string }>();
 };
 
 export const getUser = async (token: string): Promise<{ login: string; name: string }> => {
   const res = await fetch(`${GH}/user`, { headers: HEADERS(token) });
-  if (!res.ok) throw new Error('Failed to fetch GitHub user');
+  handleRateLimit(res);
+  if (!res.ok) {
+    const error = await parseGitHubError(res);
+    throw new Error(`Failed to fetch GitHub user: ${error}`);
+  }
   return res.json<{ login: string; name: string }>();
 };
 
@@ -64,7 +92,11 @@ export const listRepos = async (token: string): Promise<GHRepo[]> => {
   const res = await fetch(`${GH}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`, {
     headers: HEADERS(token),
   });
-  if (!res.ok) throw new Error('Failed to list GitHub repos');
+  handleRateLimit(res);
+  if (!res.ok) {
+    const error = await parseGitHubError(res);
+    throw new Error(`Failed to list GitHub repos: ${error}`);
+  }
   return res.json<GHRepo[]>();
 };
 
@@ -72,16 +104,26 @@ export const getRepoTree = async (token: string, owner: string, repo: string, br
   const res = await fetch(`${GH}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`, {
     headers: HEADERS(token),
   });
-  if (!res.ok) throw new Error('Failed to fetch repo tree');
+  handleRateLimit(res);
+  if (res.status === 404) throw new Error(`Repository or branch not found: ${owner}/${repo}:${branch}`);
+  if (!res.ok) {
+    const error = await parseGitHubError(res);
+    throw new Error(`Failed to fetch repo tree: ${error}`);
+  }
   const data = await res.json<{ tree: GHTreeItem[]; truncated?: boolean }>();
   return data.tree ?? [];
 };
 
 export const getFileContent = async (token: string, owner: string, repo: string, path: string): Promise<GHFile> => {
-  const res = await fetch(`${GH}/repos/${owner}/${repo}/contents/${path}`, {
+  const res = await fetch(`${GH}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`, {
     headers: HEADERS(token),
   });
-  if (!res.ok) throw new Error(`Failed to fetch file: ${path}`);
+  handleRateLimit(res);
+  if (res.status === 404) throw new Error(`File not found: ${path}`);
+  if (!res.ok) {
+    const error = await parseGitHubError(res);
+    throw new Error(`Failed to fetch file ${path}: ${error}`);
+  }
   const data = await res.json<{ content: string; sha: string; name: string; path: string }>();
   // Content is base64 with newlines
   const decoded = atob(data.content.replace(/\n/g, ''));
@@ -101,14 +143,15 @@ export const pushFile = async (
   const body: Record<string, unknown> = { message, content: encoded };
   if (sha) body.sha = sha;
 
-  const res = await fetch(`${GH}/repos/${owner}/${repo}/contents/${path}`, {
+  const res = await fetch(`${GH}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`, {
     method: 'PUT',
     headers: { ...HEADERS(token), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  handleRateLimit(res);
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`GitHub push failed: ${err}`);
+    const error = await parseGitHubError(res);
+    throw new Error(`GitHub push failed: ${error}`);
   }
   const data = await res.json<{ content: { sha: string } }>();
   return { sha: data.content.sha };

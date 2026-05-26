@@ -9,7 +9,7 @@ export const getValidAccessToken = async (
 ): Promise<string> => {
   const { data: auth } = await supabase
     .from('google_drive_auth')
-    .select('access_token, refresh_token, expires_at')
+    .select('access_token, refresh_token, expires_at, google_account_email')
     .eq('user_id', userId)
     .maybeSingle();
 
@@ -32,4 +32,23 @@ export const getValidAccessToken = async (
     .eq('user_id', userId);
 
   return refreshed.access_token;
+};
+
+export const validateUserGoogleAccount = async (
+  supabase: ReturnType<typeof createClient>,
+  userId: string,
+  accessToken: string
+): Promise<void> => {
+  const { data: auth } = await supabase
+    .from('google_drive_auth')
+    .select('google_account_email')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (!auth?.google_account_email) return;
+
+  const currentEmail = await driveService.getGoogleAccountEmail(accessToken);
+  if (currentEmail !== auth.google_account_email) {
+    throw new Error('ACCOUNT_MISMATCH');
+  }
 };

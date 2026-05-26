@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Env } from '../types';
 import * as driveService from '../services/googleDriveService';
 import { authMiddleware, AuthVariables } from '../middleware/auth';
-import { getValidAccessToken } from './driveHelpers';
+import { getValidAccessToken, validateUserGoogleAccount } from './driveHelpers';
 
 type AppEnv = { Bindings: Env; Variables: AuthVariables };
 
@@ -59,6 +59,7 @@ router.get('/callback', async (c) => {
     );
 
     const expires_at = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+    const googleAccountEmail = await driveService.getGoogleAccountEmail(tokens.access_token);
 
     await db(c).from('google_drive_auth').upsert(
       {
@@ -66,6 +67,7 @@ router.get('/callback', async (c) => {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         expires_at,
+        google_account_email: googleAccountEmail,
       },
       { onConflict: 'user_id' }
     );
@@ -113,6 +115,10 @@ router.post('/sync', authMiddleware, async (c) => {
     const { userId } = c.get('user');
     const supabase = db(c);
     const accessToken = await getValidAccessToken(supabase, userId, c.env);
+
+    // Validate the current Google account matches the stored account
+    await validateUserGoogleAccount(supabase, userId, accessToken);
+
     const driveFiles = await driveService.listFiles(accessToken);
 
     // Fetch existing Drive file IDs for this user
@@ -142,10 +148,45 @@ router.post('/sync', authMiddleware, async (c) => {
       synced++;
     }
 
+    // Import crawler service to fetch content for newly synced files
+    const { default: crawlerService } = await import('../services/crawlerService.ts');
+
+    // Fetch and store content for newly inserted files
+    if (toInsert.length > 0) {
+      const { data: newFiles } = await supabase
+        .from('files')
+        .select('id, google_drive_id, file_type')
+        .eq('user_id', userId)
+        .in('file_name', toInsert.map((f) => f.file_name))
+        .not('google_drive_id', 'is', null);
+
+      if (newFiles) {
+        await Promise.allSettled(
+          newFiles.map(async (f) => {
+            if (!f.google_drive_id || !f.file_type) return;
+            try {
+              const content = await crawlerService.fetchFileContent(f.google_drive_id, f.file_type, accessToken);
+              if (content) {
+                await supabase
+                  .from('files')
+                  .update({ content })
+                  .eq('id', f.id);
+              }
+            } catch {
+              // Silently fail for files that can't be fetched
+            }
+          })
+        );
+      }
+    }
+
     return c.json({ success: true, message: `Synced ${synced} files`, data: { synced_count: synced } });
   } catch (err) {
     if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
       return c.json({ success: false, message: 'Google Drive not connected' }, 400);
+    }
+    if (err instanceof Error && err.message === 'ACCOUNT_MISMATCH') {
+      return c.json({ success: false, message: 'Google account mismatch. Please reconnect Drive.' }, 401);
     }
     console.error('[Drive sync]', err);
     return c.json({ success: false, message: 'Sync failed' }, 500);

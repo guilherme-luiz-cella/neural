@@ -158,9 +158,14 @@ export const Dashboard = () => {
   const handleConnectGitHub = async () => {
     try {
       const res = await api.get('/github');
+      if (!res.data.success) {
+        setBanner(res.data.message ?? 'GitHub not configured');
+        return;
+      }
       window.location.href = res.data.data.url;
-    } catch {
-      setBanner('Failed to start GitHub OAuth');
+    } catch (err) {
+      const e = err as import('axios').AxiosError<{ message: string }>;
+      setBanner(e.response?.data?.message ?? 'Failed to start GitHub OAuth');
     }
   };
 

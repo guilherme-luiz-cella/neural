@@ -31,6 +31,7 @@ router.post('/run', authMiddleware, async (c) => {
 
     // Fetch content for files without content (or all)
     const contentMap = new Map<string, string>();
+    const namesMap = new Map<string, string>();
     let crawled = 0;
 
     await Promise.allSettled(
@@ -43,30 +44,44 @@ router.post('/run', authMiddleware, async (c) => {
             .update({ content, updated_at: new Date().toISOString() })
             .eq('id', f.id);
           contentMap.set(f.id, content);
+          namesMap.set(f.id, f.file_name);
           crawled++;
         } else if (f.content) {
           contentMap.set(f.id, f.content);
+          namesMap.set(f.id, f.file_name);
         }
       })
     );
 
-    // Compute pairwise similarity and upsert connections
+    // Compute pairwise similarity (semantic + name-based)
     const ids = [...contentMap.keys()];
     const kwMap = new Map(ids.map((id) => [id, crawler.extractKeywords(contentMap.get(id)!)]));
 
-    const THRESHOLD = 0.05;
+    const SEMANTIC_THRESHOLD = 0.08;
+    const NAME_THRESHOLD = 0.6;
     const toUpsert: Array<{ file_1_id: string; file_2_id: string; similarity_score: number; created_by: string; connection_type: string }> = [];
 
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
-        const score = crawler.computeSimilarity(kwMap.get(ids[i])!, kwMap.get(ids[j])!);
-        if (score >= THRESHOLD) {
+        const semanticScore = crawler.computeSimilarity(kwMap.get(ids[i])!, kwMap.get(ids[j])!);
+        const nameScore = crawler.computeNameSimilarity(namesMap.get(ids[i])!, namesMap.get(ids[j])!);
+
+        // Create connection if either semantic or name-based similarity is high enough
+        if (semanticScore >= SEMANTIC_THRESHOLD) {
           toUpsert.push({
             file_1_id: ids[i],
             file_2_id: ids[j],
-            similarity_score: Math.round(score * 1000) / 1000,
+            similarity_score: Math.round(semanticScore * 1000) / 1000,
             created_by: 'crawler',
             connection_type: 'semantic',
+          });
+        } else if (nameScore >= NAME_THRESHOLD) {
+          toUpsert.push({
+            file_1_id: ids[i],
+            file_2_id: ids[j],
+            similarity_score: Math.round(nameScore * 1000) / 1000,
+            created_by: 'crawler',
+            connection_type: 'name',
           });
         }
       }

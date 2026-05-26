@@ -71,6 +71,15 @@ export const refreshAccessToken = async (
   return res.json();
 };
 
+export const getGoogleAccountEmail = async (accessToken: string): Promise<string> => {
+  const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error('Failed to get Google account info');
+  const data: { email: string } = await res.json();
+  return data.email;
+};
+
 export const listFiles = async (accessToken: string): Promise<DriveFile[]> => {
   const allFiles: DriveFile[] = [];
   let pageToken: string | undefined;
