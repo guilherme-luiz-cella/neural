@@ -128,7 +128,7 @@ export const GitHubPanel = ({ onClose, onImported, projects }: Props) => {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
           <div className="flex items-center gap-2">
-            <span className="text-white font-semibold text-sm">⚡ GitHub Repository Browser</span>
+            <span className="text-white font-semibold text-sm">GitHub Repository Browser</span>
           </div>
           <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none">×</button>
         </div>
@@ -152,7 +152,7 @@ export const GitHubPanel = ({ onClose, onImported, projects }: Props) => {
                 }`}
               >
                 <div className="font-medium truncate">{repo.name}</div>
-                <div className="text-gray-600 text-[10px] truncate">{repo.owner.login} · {repo.private ? '🔒' : '🌐'}</div>
+                <div className="text-gray-600 text-[10px] truncate">{repo.owner.login} · {repo.private ? 'private' : 'public'}</div>
               </button>
             ))}
           </div>

@@ -27,9 +27,25 @@ const detectLanguage = (fileName: string, fileType: string | null): string => {
   return map[ext ?? ''] ?? 'plaintext';
 };
 
+const getDrivePreviewUrl = (driveId: string, fileType: string | null): string | null => {
+  if (!fileType) return null;
+  if (fileType.includes('google-apps.document')) return `https://docs.google.com/document/d/${driveId}/preview`;
+  if (fileType.includes('google-apps.spreadsheet')) return `https://docs.google.com/spreadsheets/d/${driveId}/preview`;
+  if (fileType.includes('google-apps.presentation')) return `https://docs.google.com/presentation/d/${driveId}/preview`;
+  if (fileType === 'application/pdf' || fileType.includes('officedocument')) {
+    return `https://drive.google.com/file/d/${driveId}/preview`;
+  }
+  return null;
+};
+
+const isImageType = (fileType: string | null) => !!fileType?.startsWith('image/');
+const isVideoType = (fileType: string | null) => !!fileType?.startsWith('video/');
+const isAudioType = (fileType: string | null) => !!fileType?.startsWith('audio/');
+
 export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Props) => {
   const [content, setContent] = useState<string | null>(null);
   const [fileType, setFileType] = useState<string | null>(null);
+  const [driveId, setDriveId] = useState<string | null>(null);
   const [githubRepo, setGithubRepo] = useState<string | null>(null);
   const [githubPath, setGithubPath] = useState<string | null>(null);
   const [githubSha, setGithubSha] = useState<string | null>(null);
@@ -52,6 +68,7 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
         const file = res.data.data.file;
         setContent(file.content ?? '');
         setFileType(file.file_type);
+        setDriveId(file.google_drive_id ?? null);
         setGithubRepo(file.github_repo ?? null);
         setGithubPath(file.github_path ?? null);
         setGithubSha(file.github_sha ?? null);
@@ -108,6 +125,31 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
 
   const lang = detectLanguage(fileName, fileType);
   const isReadOnly = !!fileType?.includes('google-apps');
+  const previewUrl = driveId ? getDrivePreviewUrl(driveId, fileType) : null;
+  const useIframe = !!previewUrl;
+  const useImage = !useIframe && isImageType(fileType) && !!driveId;
+  const useVideo = !useIframe && isVideoType(fileType) && !!driveId;
+  const useAudio = !useIframe && isAudioType(fileType) && !!driveId;
+  const useMedia = useImage || useVideo || useAudio;
+  const useEditor = !useIframe && !useMedia;
+
+  const [mediaBlobUrl, setMediaBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!useMedia || !driveId) { setMediaBlobUrl(null); return; }
+    let revoked = false;
+    let url: string | null = null;
+    api.get(`/files/${fileId}/media`, { responseType: 'blob' })
+      .then((res) => {
+        if (revoked) return;
+        url = URL.createObjectURL(res.data as Blob);
+        setMediaBlobUrl(url);
+      })
+      .catch(() => setMediaBlobUrl(null));
+    return () => {
+      revoked = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [useMedia, driveId, fileId]);
 
   return (
     <div className="flex flex-col h-full bg-gray-950 overflow-hidden">
@@ -119,7 +161,7 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
           <span className="text-xs text-gray-500">{lang}</span>
           {githubRepo && (
             <span className="text-xs text-gray-600 truncate max-w-[160px]" title={githubPath ?? ''}>
-              ⚡ {githubRepo}
+              {githubRepo}
             </span>
           )}
         </div>
@@ -131,7 +173,7 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
               title={dirty ? 'Save first, then push' : 'Push to GitHub'}
               className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-300 rounded-md transition-colors"
             >
-              {pushing ? 'Pushing…' : pushMsg || '⚡ Push'}
+              {pushing ? 'Pushing…' : pushMsg || 'Push'}
             </button>
           )}
           {!isReadOnly && (
@@ -148,7 +190,28 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
 
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">Loading…</div>
-      ) : (
+      ) : useIframe && previewUrl ? (
+        <div className="flex-1 overflow-hidden bg-gray-900">
+          <iframe
+            src={previewUrl}
+            title={fileName}
+            className="w-full h-full border-0"
+            sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+          />
+        </div>
+      ) : useImage ? (
+        <div className="flex-1 flex items-center justify-center overflow-auto bg-gray-900 p-4">
+          {mediaBlobUrl ? <img src={mediaBlobUrl} alt={fileName} className="max-w-full max-h-full object-contain" /> : <span className="text-gray-600 text-sm">Loading image…</span>}
+        </div>
+      ) : useVideo ? (
+        <div className="flex-1 flex items-center justify-center bg-gray-900 p-4">
+          {mediaBlobUrl ? <video src={mediaBlobUrl} controls className="max-w-full max-h-full" /> : <span className="text-gray-600 text-sm">Loading video…</span>}
+        </div>
+      ) : useAudio ? (
+        <div className="flex-1 flex items-center justify-center bg-gray-900 p-4">
+          {mediaBlobUrl ? <audio src={mediaBlobUrl} controls className="w-96" /> : <span className="text-gray-600 text-sm">Loading audio…</span>}
+        </div>
+      ) : useEditor ? (
         <div className="flex-1 overflow-hidden">
           <Editor
             height="100%"
@@ -175,7 +238,7 @@ export const FileEditor = ({ fileId, fileName, onClose: _onClose, onSaved }: Pro
             }}
           />
         </div>
-      )}
+      ) : null}
 
       {/* Hidden sha tracker — updated after push so next push uses fresh sha */}
       <input type="hidden" value={githubSha ?? ''} />

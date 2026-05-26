@@ -21,6 +21,24 @@ const EXPORT_MIME: Record<string, string> = {
   'audio/x-m4a': '__download__',
   'video/mp4': '__download__',
   'video/quicktime': '__download__',
+  'text/javascript': '__download__',
+  'application/javascript': '__download__',
+  'application/x-javascript': '__download__',
+  'application/x-httpd-php': '__download__',
+  'application/x-php': '__download__',
+  'text/x-php': '__download__',
+  'text/x-python': '__download__',
+  'application/typescript': '__download__',
+  'text/x-typescript': '__download__',
+  'text/x-c': '__download__',
+  'text/x-c++': '__download__',
+  'text/x-java-source': '__download__',
+  'text/x-ruby': '__download__',
+  'text/x-go': '__download__',
+  'text/x-rust': '__download__',
+  'text/x-shellscript': '__download__',
+  'text/yaml': '__download__',
+  'application/x-yaml': '__download__',
 };
 
 const MAX_CONTENT = 30_000;
@@ -220,7 +238,9 @@ export const fetchFileContent = async (
   mimeType: string,
   accessToken: string
 ): Promise<string | null> => {
-  const exportMime = EXPORT_MIME[mimeType];
+  const explicit = EXPORT_MIME[mimeType];
+  const exportMime = explicit
+    ?? (mimeType.startsWith('text/') ? '__download__' : undefined);
   const metadata = await fetchDriveMetadata(fileId, accessToken);
   if (!exportMime) return normalizeExtractedContent([metadataToContent(metadata)]);
 

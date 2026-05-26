@@ -69,7 +69,7 @@ export const HomePage = () => {
             </div>
             <div className="grid min-h-[430px] grid-cols-[44px_190px_1fr]">
               <div className="border-r border-gray-800 bg-[#181818] p-2">
-                {['F', 'G', 'S', '⚙'].map((item) => (
+                {['F', 'G', 'S', 'C'].map((item) => (
                   <div key={item} className="mb-2 flex h-8 items-center justify-center text-xs text-gray-500">{item}</div>
                 ))}
               </div>
