@@ -97,6 +97,60 @@ const FileTypeBadge = ({ fileName, fileType }: { fileName: string; fileType: str
   );
 };
 
+// ── Folder tree ──────────────────────────────────────────────────────────────
+
+type TreeNode = {
+  name: string;
+  path: string;
+  files: DBFile[];
+  children: Map<string, TreeNode>;
+};
+
+const emptyNode = (name: string, path: string): TreeNode => ({
+  name,
+  path,
+  files: [],
+  children: new Map(),
+});
+
+const buildTree = (files: DBFile[]): TreeNode => {
+  const root = emptyNode('', '');
+
+  for (const file of files) {
+    const path = file.github_path;
+    if (!path) {
+      root.files.push(file);
+      continue;
+    }
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length <= 1) {
+      root.files.push(file);
+      continue;
+    }
+    const dirs = parts.slice(0, -1);
+    let node = root;
+    let curPath = '';
+    for (const dir of dirs) {
+      curPath = curPath ? `${curPath}/${dir}` : dir;
+      let child = node.children.get(dir);
+      if (!child) {
+        child = emptyNode(dir, curPath);
+        node.children.set(dir, child);
+      }
+      node = child;
+    }
+    node.files.push(file);
+  }
+
+  return root;
+};
+
+const sortFiles = (list: DBFile[]): DBFile[] =>
+  [...list].sort((a, b) => a.file_name.localeCompare(b.file_name));
+
+const sortChildren = (children: Map<string, TreeNode>): TreeNode[] =>
+  [...children.values()].sort((a, b) => a.name.localeCompare(b.name));
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 type ContextMenu = { x: number; y: number; file: DBFile } | null;
@@ -209,6 +263,73 @@ export const FileExplorer = ({
     ...projects.map((p) => ({ label: p.name, project: p, files: files.filter((f) => f.project_id === p.id) })),
     { label: 'Unassigned', project: null, files: files.filter((f) => !f.project_id) },
   ];
+
+  const renderFileRow = (file: DBFile, depth: number) => {
+    const isActive = activeFileId === file.id;
+    const isOpenTab = openFileIds.includes(file.id);
+    const paddingLeft = 12 + depth * 12;
+    return (
+      <div
+        key={file.id}
+        onClick={() => onFileOpen(file)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setContextMenu({ x: e.clientX, y: e.clientY, file });
+        }}
+        style={{ paddingLeft }}
+        className={`flex items-center gap-1.5 pr-2 py-[3px] cursor-pointer transition-colors ${
+          isActive
+            ? 'bg-[#37373d] text-[#cccccc] border-l-2 border-[#007acc]'
+            : isOpenTab
+            ? 'text-[#cccccc] hover:bg-[#2a2d2e]'
+            : 'text-[#999] hover:bg-[#2a2d2e] hover:text-[#cccccc]'
+        }`}
+      >
+        <FileTypeBadge fileName={file.file_name} fileType={file.file_type} />
+        <span className="truncate flex-1 text-[11px]">{file.file_name}</span>
+        {file.github_repo && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-[#4ec9b0] shrink-0"
+            title={`GitHub: ${file.github_repo}`}
+          />
+        )}
+        {isOpenTab && !isActive && (
+          <span className="w-1 h-1 rounded-full bg-[#555] shrink-0" />
+        )}
+      </div>
+    );
+  };
+
+  const renderNode = (node: TreeNode, depth: number): JSX.Element[] => {
+    const out: JSX.Element[] = [];
+    for (const dir of sortChildren(node.children)) {
+      const dirKey = `dir:${dir.path}`;
+      const dirOpen = !collapsed[dirKey];
+      const paddingLeft = 12 + depth * 12;
+      out.push(
+        <div
+          key={dirKey}
+          style={{ paddingLeft }}
+          onClick={() => toggle(dirKey)}
+          className="flex items-center gap-1 pr-2 py-[3px] hover:bg-[#2a2d2e] cursor-pointer"
+        >
+          <span className="text-[#c5c5c5] w-3 shrink-0 text-[9px]">
+            {dirOpen ? '▾' : '▸'}
+          </span>
+          <span className="text-[#cccccc] text-[11px] truncate">{dir.name}</span>
+          <span className="text-[#555] text-[9px] ml-auto">
+            {dir.files.length + dir.children.size}
+          </span>
+        </div>
+      );
+      if (dirOpen) out.push(...renderNode(dir, depth + 1));
+    }
+    for (const file of sortFiles(node.files)) {
+      out.push(renderFileRow(file, depth));
+    }
+    return out;
+  };
 
   return (
     <div
@@ -365,40 +486,7 @@ export const FileExplorer = ({
 
               {isOpen && (
                 <div>
-                  {gFiles.map((file) => {
-                    const isActive = activeFileId === file.id;
-                    const isOpen_ = openFileIds.includes(file.id);
-                    return (
-                      <div
-                        key={file.id}
-                        onClick={() => onFileOpen(file)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setContextMenu({ x: e.clientX, y: e.clientY, file });
-                        }}
-                        className={`flex items-center gap-1.5 pl-5 pr-2 py-[3px] cursor-pointer transition-colors ${
-                          isActive
-                            ? 'bg-[#37373d] text-[#cccccc] border-l-2 border-[#007acc]'
-                            : isOpen_
-                            ? 'text-[#cccccc] hover:bg-[#2a2d2e]'
-                            : 'text-[#999] hover:bg-[#2a2d2e] hover:text-[#cccccc]'
-                        }`}
-                      >
-                        <FileTypeBadge fileName={file.file_name} fileType={file.file_type} />
-                        <span className="truncate flex-1 text-[11px]">{file.file_name}</span>
-                        {file.github_repo && (
-                          <span
-                            className="w-1.5 h-1.5 rounded-full bg-[#4ec9b0] shrink-0"
-                            title={`GitHub: ${file.github_repo}`}
-                          />
-                        )}
-                        {isOpen_ && !isActive && (
-                          <span className="w-1 h-1 rounded-full bg-[#555] shrink-0" />
-                        )}
-                      </div>
-                    );
-                  })}
+                  {renderNode(buildTree(gFiles), 1)}
 
                   {creatingFile === (project?.id ?? 'unassigned') && (
                     <div className="pl-5 pr-2 py-0.5">
