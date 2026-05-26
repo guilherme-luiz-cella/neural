@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { ConnectDrive } from '../Drive/ConnectDrive';
+import { DriveAccountChip } from '../Drive/DriveAccountChip';
 import { FileExplorer } from '../Explorer/FileExplorer';
 import { GitHubPanel } from '../GitHub/GitHubPanel';
 import { api } from '../../utils/api';
@@ -47,6 +48,8 @@ export const Dashboard = () => {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [driveConnected, setDriveConnected] = useState<boolean | null>(null);
+  const [driveEmail, setDriveEmail] = useState<string | null>(null);
+  const [driveMismatch, setDriveMismatch] = useState(false);
   const [files, setFiles] = useState<DBFile[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [banner, setBanner] = useState('');
@@ -64,9 +67,14 @@ export const Dashboard = () => {
   const fetchDriveStatus = useCallback(async () => {
     try {
       const res = await api.get('/drive/status');
-      setDriveConnected(res.data.data.connected);
+      const d = res.data.data;
+      setDriveConnected(d.connected);
+      setDriveEmail(d.account_email ?? null);
+      setDriveMismatch(!!d.account_mismatch);
     } catch {
       setDriveConnected(false);
+      setDriveEmail(null);
+      setDriveMismatch(false);
     }
   }, []);
 
@@ -228,6 +236,18 @@ export const Dashboard = () => {
               <span className="text-green-400 hidden sm:inline">{githubUsername}</span>
               <span className="text-gray-600 hidden sm:inline">Repos</span>
             </button>
+          )}
+          {driveConnected && driveEmail && (
+            <DriveAccountChip
+              email={driveEmail}
+              mismatch={driveMismatch}
+              onDisconnected={() => {
+                setDriveConnected(false);
+                setDriveEmail(null);
+                setDriveMismatch(false);
+                setFiles([]);
+              }}
+            />
           )}
           <span className="text-gray-500 text-xs hidden sm:block">{user?.email}</span>
           <button onClick={logout} className="text-xs text-gray-500 hover:text-white transition-colors">
