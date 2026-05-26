@@ -191,69 +191,70 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           }
         }
       }
-      for (const link of linksRef.current) {
-        const s = link.source as GraphNode;
-        const tgt = link.target as GraphNode;
-        if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
+    }
 
-        const strength = link.value ?? 0.1;
-        const alpha = Math.min(0.8, strength * 1.5);
+    for (const link of linksRef.current) {
+      const s = link.source as GraphNode;
+      const tgt = link.target as GraphNode;
+      if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
+
+      const strength = link.value ?? 0.1;
+      const alpha = Math.min(isClustered ? 0.7 : 0.9, strength * (isClustered ? 1.2 : 1.6));
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(tgt.x, tgt.y);
+      ctx.strokeStyle = link.type === 'name'
+        ? `rgba(251,191,36,${alpha})`
+        : `rgba(99,102,241,${alpha})`;
+      ctx.lineWidth = Math.max(0.5, strength * (isClustered ? 2.2 : 2.8));
+      ctx.stroke();
+    }
+
+    for (const node of nodesRef.current) {
+      if (node.x == null || node.y == null) continue;
+      const isHovered = hoveredRef.current === node.id;
+      const r = isHovered ? NODE_RADIUS * 1.8 : NODE_RADIUS;
+
+      if (isHovered) {
+        const grad = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 3);
+        grad.addColorStop(0, node.color + '66');
+        grad.addColorStop(1, 'transparent');
         ctx.beginPath();
-        ctx.moveTo(s.x, s.y);
-        ctx.lineTo(tgt.x, tgt.y);
-        ctx.strokeStyle = link.type === 'name'
-          ? `rgba(251,191,36,${alpha})`
-          : `rgba(99,102,241,${alpha})`;
-        ctx.lineWidth = Math.max(0.5, strength * 2.5);
-        ctx.stroke();
+        ctx.arc(node.x, node.y, r * 3, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
       }
 
-      for (const node of nodesRef.current) {
-        if (node.x == null || node.y == null) continue;
-        const isHovered = hoveredRef.current === node.id;
-        const r = isHovered ? NODE_RADIUS * 1.8 : NODE_RADIUS;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = node.color;
+      ctx.fill();
 
-        if (isHovered) {
-          const grad = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 3);
-          grad.addColorStop(0, node.color + '66');
-          grad.addColorStop(1, 'transparent');
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, r * 3, 0, Math.PI * 2);
-          ctx.fillStyle = grad;
-          ctx.fill();
-        }
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
 
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = node.color;
-        ctx.fill();
+      if (zoom > 0.25) {
+        const fontSize = Math.max(9, Math.min(13, 11 / zoom));
+        ctx.font = `${fontSize}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = isHovered ? '#ffffff' : 'rgba(209,213,219,0.85)';
+        const label = node.name.length > 28 ? node.name.slice(0, 25) + '…' : node.name;
+        ctx.fillText(label, node.x, node.y - r - 2);
 
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
-
-        if (zoom > 0.25) {
-          const fontSize = Math.max(9, Math.min(13, 11 / zoom));
-          ctx.font = `${fontSize}px system-ui, sans-serif`;
+        if (node.file_type && zoom > 0.35) {
+          const typeFont = Math.max(7, Math.min(10, 8 / zoom));
+          ctx.font = `${typeFont}px system-ui, sans-serif`;
+          ctx.fillStyle = 'rgba(156,163,175,0.6)';
           ctx.textAlign = 'center';
-          ctx.textBaseline = 'bottom';
-          ctx.fillStyle = isHovered ? '#ffffff' : 'rgba(209,213,219,0.85)';
-          const label = node.name.length > 28 ? node.name.slice(0, 25) + '…' : node.name;
-          ctx.fillText(label, node.x, node.y - r - 2);
-
-          if (node.file_type && zoom > 0.35) {
-            const typeFont = Math.max(7, Math.min(10, 8 / zoom));
-            ctx.font = `${typeFont}px system-ui, sans-serif`;
-            ctx.fillStyle = 'rgba(156,163,175,0.6)';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'top';
-            const typeLabel = node.file_type.includes('spreadsheet') ? '📊' : 
-                             node.file_type.includes('document') ? '📄' :
-                             node.file_type.includes('presentation') ? '📑' : '📁';
-            ctx.fillText(typeLabel, node.x, node.y + r + 2);
-          }
+          ctx.textBaseline = 'top';
+          const typeLabel = node.file_type.includes('spreadsheet') ? '📊' : 
+                           node.file_type.includes('document') ? '📄' :
+                           node.file_type.includes('presentation') ? '📑' : '📁';
+          ctx.fillText(typeLabel, node.x, node.y + r + 2);
         }
       }
     }

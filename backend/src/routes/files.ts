@@ -5,11 +5,49 @@ import { Env } from '../types';
 import { authMiddleware, AuthVariables } from '../middleware/auth';
 import { AppError, NotFoundError, ValidationError } from '../utils/errors';
 import { getValidAccessToken, validateUserGoogleAccount } from './driveHelpers';
+import { fetchFileContent } from '../services/crawlerService';
 
 type AppEnv = { Bindings: Env; Variables: AuthVariables };
 
 const router = new Hono<AppEnv>();
 const db = (c: { env: Env }) => createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_KEY);
+
+type FileRecord = {
+  id: string;
+  file_name: string;
+  file_type: string | null;
+  google_drive_id: string | null;
+  github_repo?: string | null;
+  github_path?: string | null;
+  github_sha?: string | null;
+  project_id?: string | null;
+  content: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export const loadFileContentIfMissing = async (params: {
+  supabase: ReturnType<typeof createClient>;
+  userId: string;
+  env: Env;
+  file: FileRecord;
+}): Promise<FileRecord> => {
+  const { supabase, userId, env, file } = params;
+  if (file.content || !file.google_drive_id || !file.file_type) return file;
+
+  try {
+    const accessToken = await getValidAccessToken(supabase, userId, env);
+    const fetchedContent = await fetchFileContent(file.google_drive_id, file.file_type, accessToken);
+    if (fetchedContent) {
+      await supabase.from('files').update({ content: fetchedContent }).eq('id', file.id);
+      return { ...file, content: fetchedContent };
+    }
+  } catch {
+    // Keep original file data if Drive fetch fails
+  }
+
+  return file;
+};
 
 const onError = (err: unknown, c: Parameters<Parameters<typeof router.get>[1]>[0]) => {
   if (err instanceof AppError) {
@@ -44,7 +82,8 @@ router.get('/:id', authMiddleware, async (c) => {
   try {
     const { userId } = c.get('user');
     const id = c.req.param('id');
-    const { data, error } = await db(c)
+    const supabase = db(c);
+    const { data, error } = await supabase
       .from('files')
       .select('id, file_name, file_type, google_drive_id, github_repo, github_path, github_sha, project_id, content, created_at, updated_at')
       .eq('id', id)
@@ -52,24 +91,12 @@ router.get('/:id', authMiddleware, async (c) => {
       .single();
     if (error || !data) throw new NotFoundError('File not found');
 
-    // If content is missing but we have a Drive file ID, try to fetch it
-    if (!data.content && data.google_drive_id && data.file_type) {
-      try {
-        const { default: crawlerService } = await import('../services/crawlerService.ts');
-        const supabase = db(c);
-        const accessToken = await getValidAccessToken(supabase, userId, c.env);
-        const fetchedContent = await crawlerService.fetchFileContent(data.google_drive_id, data.file_type, accessToken);
-        if (fetchedContent) {
-          // Update the file with fetched content
-          await supabase.from('files').update({ content: fetchedContent }).eq('id', id);
-          data.content = fetchedContent;
-        }
-      } catch {
-        // If fetching fails, return what we have (content might be null)
-      }
-    }
+    let file = data as FileRecord;
 
-    return c.json({ success: true, message: 'File retrieved', data: { file: data } });
+    // If content is missing but we have a Drive file ID, try to fetch it
+    file = await loadFileContentIfMissing({ supabase, userId, env: c.env, file });
+
+    return c.json({ success: true, message: 'File retrieved', data: { file } });
   } catch (err) { return onError(err, c); }
 });
 

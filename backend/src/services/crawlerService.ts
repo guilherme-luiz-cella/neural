@@ -129,3 +129,76 @@ export const computeNameSimilarity = (name1: string, name2: string): number => {
 
   return overlap / Math.max(tokens1.size, tokens2.size);
 };
+
+type ConnectionRow = {
+  file_1_id: string;
+  file_2_id: string;
+  similarity_score: number;
+  created_by: string;
+  connection_type: 'semantic' | 'name';
+};
+
+type BuildConnectionsParams = {
+  ids: string[];
+  contentMap: Map<string, string>;
+  namesMap: Map<string, string>;
+  enableSemantic: boolean;
+  enableName: boolean;
+  semanticThreshold?: number;
+  nameThreshold?: number;
+};
+
+export const buildConnections = (params: BuildConnectionsParams): ConnectionRow[] => {
+  const {
+    ids,
+    contentMap,
+    namesMap,
+    enableSemantic,
+    enableName,
+    semanticThreshold = 0.08,
+    nameThreshold = 0.6,
+  } = params;
+
+  if (!enableSemantic && !enableName) return [];
+
+  const kwMap = enableSemantic
+    ? new Map(ids.map((id) => [id, extractKeywords(contentMap.get(id) ?? '')]))
+    : new Map<string, Set<string>>();
+
+  const toUpsert: ConnectionRow[] = [];
+
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = ids[i];
+      const b = ids[j];
+
+      const semanticScore = enableSemantic
+        ? computeSimilarity(kwMap.get(a) ?? new Set(), kwMap.get(b) ?? new Set())
+        : 0;
+
+      const nameScore = enableName
+        ? computeNameSimilarity(namesMap.get(a) ?? '', namesMap.get(b) ?? '')
+        : 0;
+
+      if (enableSemantic && semanticScore >= semanticThreshold) {
+        toUpsert.push({
+          file_1_id: a,
+          file_2_id: b,
+          similarity_score: Math.round(semanticScore * 1000) / 1000,
+          created_by: 'crawler',
+          connection_type: 'semantic',
+        });
+      } else if (enableName && nameScore >= nameThreshold) {
+        toUpsert.push({
+          file_1_id: a,
+          file_2_id: b,
+          similarity_score: Math.round(nameScore * 1000) / 1000,
+          created_by: 'crawler',
+          connection_type: 'name',
+        });
+      }
+    }
+  }
+
+  return toUpsert;
+};
