@@ -51,14 +51,11 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const [crawlMsg, setCrawlMsg] = useState('');
   const [showClusterLabels, setShowClusterLabels] = useState(true);
   const [showLinks, setShowLinks] = useState(true);
-  const [showNameLinks, setShowNameLinks] = useState(false);
   const [linkStrengthFilter, setLinkStrengthFilter] = useState(0.2);
   const showLinksRef = useRef(true);
-  const showNameLinksRef = useRef(false);
   const linkFilterRef = useRef(0.2);
 
   useEffect(() => { showLinksRef.current = showLinks; }, [showLinks]);
-  useEffect(() => { showNameLinksRef.current = showNameLinks; }, [showNameLinks]);
   useEffect(() => { linkFilterRef.current = linkStrengthFilter; }, [linkStrengthFilter]);
 
   const fetchGraph = useCallback(async () => {
@@ -214,7 +211,6 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         const s = link.source as GraphNode;
         const tgt = link.target as GraphNode;
         if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
-        if (link.type === 'name' && !showNameLinksRef.current) continue;
 
         const strength = link.value ?? 0.1;
         if (strength < minStrength) continue;
@@ -232,9 +228,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.beginPath();
         ctx.moveTo(s.x, s.y);
         ctx.lineTo(tgt.x, tgt.y);
-        ctx.strokeStyle = link.type === 'name'
-          ? `rgba(251,191,36,${alpha})`
-          : `rgba(99,102,241,${alpha})`;
+        ctx.strokeStyle = `rgba(99,102,241,${alpha})`;
         ctx.lineWidth = incident
           ? Math.max(1.2, strength * 2.6)
           : Math.max(0.35, strength * 1.1);
@@ -496,15 +490,6 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
             />
             Show links
           </label>
-          <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:text-gray-400">
-            <input
-              type="checkbox"
-              checked={showNameLinks}
-              onChange={(e) => { setShowNameLinks(e.target.checked); requestAnimationFrame(draw); }}
-              className="w-4 h-4 rounded border-gray-600 bg-gray-800 cursor-pointer"
-            />
-            Name match
-          </label>
           <label className="flex items-center gap-2 text-xs text-gray-600">
             Min link strength
             <input
@@ -519,12 +504,8 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
             <span className="w-8 text-right tabular-nums">{linkStrengthFilter.toFixed(2)}</span>
           </label>
           <div className="flex items-center gap-1.5 text-xs text-gray-600">
-            <div className="w-4 h-0.5 bg-yellow-400/70 rounded" />
-            name match
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-gray-600">
             <div className="w-4 h-0.5 bg-indigo-400/70 rounded" />
-            content match
+            subject match
           </div>
         </div>
       </div>

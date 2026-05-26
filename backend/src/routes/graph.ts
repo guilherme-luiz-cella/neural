@@ -8,46 +8,24 @@ type AppEnv = { Bindings: Env; Variables: AuthVariables };
 const router = new Hono<AppEnv>();
 const db = (c: { env: Env }) => createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_KEY);
 
-// Tokenize filename into meaningful words (split camelCase, underscores, dashes, dots)
-const nameTokens = (filename: string): Set<string> => {
-  const noExt = filename.replace(/\.[^.]+$/, '');
-  const words = noExt
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/[_\-\.]+/g, ' ')
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w) => w.length >= 3);
-  return new Set(words);
-};
-
-const nameSimilarity = (a: Set<string>, b: Set<string>): number => {
-  if (a.size === 0 || b.size === 0) return 0;
-  let shared = 0;
-  for (const w of a) if (b.has(w)) shared++;
-  return shared / Math.max(a.size, b.size);
-};
-
 // GET /api/graph
 router.get('/', authMiddleware, async (c) => {
   try {
     const { userId } = c.get('user');
     const supabase = db(c);
 
-    // Fetch files, projects, and user settings in parallel
     const [filesRes, projectsRes, settingsRes] = await Promise.all([
       supabase.from('files').select('id, file_name, file_type, project_id, drive_path, github_repo').eq('user_id', userId),
       supabase.from('projects').select('id, name, color_tag').eq('user_id', userId),
-      supabase.from('user_settings').select('enable_semantic_matching, enable_name_matching').eq('user_id', userId).single(),
+      supabase.from('user_settings').select('enable_semantic_matching').eq('user_id', userId).single(),
     ]);
 
     const files = filesRes.data ?? [];
     const projects = projectsRes.data ?? [];
-    const settings = settingsRes.data ?? { enable_semantic_matching: true, enable_name_matching: true };
+    const settings = settingsRes.data ?? { enable_semantic_matching: true };
 
     const fileIds = files.map((f) => f.id);
 
-    // Fetch semantic connections from DB (crawler-produced)
     const connectionsRes = fileIds.length
       ? await supabase
           .from('connections')
@@ -112,8 +90,8 @@ router.get('/', authMiddleware, async (c) => {
       .filter(([id]) => !projectColorMap.has(id) && id !== 'unassigned')
       .map(([id, info]) => ({ id, name: info.label, color_tag: info.color }));
 
-    // Semantic links from DB (only strong ones, ≥ 0.1) — respect user setting
-    const semanticLinks = settings.enable_semantic_matching
+    // Subject (TF-IDF) links from crawler-produced connections only.
+    const subjectLinks = settings.enable_semantic_matching
       ? dbConnections
           .filter((c) => c.connection_type === 'semantic' && fileIdSet.has(c.file_1_id) && fileIdSet.has(c.file_2_id) && (c.similarity_score ?? 0) >= 0.1)
           .map((c) => ({
@@ -124,38 +102,12 @@ router.get('/', authMiddleware, async (c) => {
           }))
       : [];
 
-    // Name-based links — computed without crawling (only strong matches, ≥ 0.35) — respect user setting
-    const tokenMap = new Map(files.map((f) => [f.id, nameTokens(f.file_name)]));
-    const existingPairs = new Set(semanticLinks.map((l) => `${l.source}:${l.target}`));
-    const nameLinks: typeof semanticLinks = [];
-
-    if (settings.enable_name_matching) {
-      for (let i = 0; i < files.length; i++) {
-        for (let j = i + 1; j < files.length; j++) {
-          const a = files[i];
-          const b = files[j];
-          const pair = `${a.id}:${b.id}`;
-          if (existingPairs.has(pair)) continue;
-
-          const score = nameSimilarity(tokenMap.get(a.id)!, tokenMap.get(b.id)!);
-          if (score >= 0.35) {
-            nameLinks.push({
-              source: a.id,
-              target: b.id,
-              value: Math.round(score * 100) / 100,
-              type: 'name',
-            });
-          }
-        }
-      }
-    }
-
     return c.json({
       success: true,
       message: 'Graph data retrieved',
       data: {
         nodes,
-        links: [...semanticLinks, ...nameLinks],
+        links: subjectLinks,
         projects: [...projects, ...syntheticGroups],
       },
     });
