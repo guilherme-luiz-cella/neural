@@ -49,6 +49,23 @@ export const validateUserGoogleAccount = async (
 
   const currentEmail = await driveService.getGoogleAccountEmail(accessToken);
   if (currentEmail !== auth.google_account_email) {
-    throw new Error('ACCOUNT_MISMATCH');
+    // Account mismatch detected - disconnect Drive and log out user
+    console.warn(`[Security] Account mismatch detected for user ${userId}: expected=${auth.google_account_email}, actual=${currentEmail}`);
+    
+    // Disconnect Drive
+    await supabase.from('google_drive_auth').delete().eq('user_id', userId);
+    
+    // Invalidate all sessions for this user
+    await supabase.from('sessions').delete().eq('user_id', userId);
+    
+    throw new Error('ACCOUNT_MISMATCH_LOGOUT');
   }
+};
+
+// Force disconnect Drive (used for logout)
+export const disconnectDrive = async (
+  supabase: ReturnType<typeof createClient>,
+  userId: string
+): Promise<void> => {
+  await supabase.from('google_drive_auth').delete().eq('user_id', userId);
 };

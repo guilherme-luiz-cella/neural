@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Env } from '../types';
 import * as driveService from '../services/googleDriveService';
 import { authMiddleware, AuthVariables } from '../middleware/auth';
-import { getValidAccessToken, validateUserGoogleAccount } from './driveHelpers';
+import { getValidAccessToken, validateUserGoogleAccount, disconnectDrive } from './driveHelpers';
 
 type AppEnv = { Bindings: Env; Variables: AuthVariables };
 
@@ -81,13 +81,50 @@ router.get('/callback', async (c) => {
 
 // GET /api/drive/status
 router.get('/status', authMiddleware, async (c) => {
-  const { userId } = c.get('user');
-  const { data } = await db(c)
-    .from('google_drive_auth')
-    .select('id, expires_at')
-    .eq('user_id', userId)
-    .maybeSingle();
-  return c.json({ success: true, message: 'Drive status', data: { connected: !!data } });
+  try {
+    const { userId } = c.get('user');
+    const supabase = db(c);
+    const { data } = await supabase
+      .from('google_drive_auth')
+      .select('id, expires_at, google_account_email')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!data) {
+      return c.json({ success: true, message: 'Drive status', data: { connected: false, account_email: null, account_mismatch: false } });
+    }
+
+    // Check for account mismatch
+    try {
+      const accessToken = await getValidAccessToken(supabase, userId, c.env);
+      const currentEmail = await driveService.getGoogleAccountEmail(accessToken);
+      const mismatch = currentEmail !== data.google_account_email;
+
+      if (mismatch) {
+        console.warn(`[Drive] Account mismatch for user ${userId}: stored=${data.google_account_email}, current=${currentEmail}`);
+      }
+
+      return c.json({
+        success: true,
+        message: 'Drive status',
+        data: {
+          connected: true,
+          account_email: data.google_account_email,
+          account_mismatch: mismatch,
+          current_email: currentEmail,
+        },
+      });
+    } catch {
+      return c.json({
+        success: true,
+        message: 'Drive status',
+        data: { connected: true, account_email: data.google_account_email, account_mismatch: false },
+      });
+    }
+  } catch (err) {
+    console.error('[Drive status]', err);
+    return c.json({ success: false, message: 'Failed to check Drive status' }, 500);
+  }
 });
 
 // GET /api/drive/files
@@ -96,6 +133,10 @@ router.get('/files', authMiddleware, async (c) => {
     const { userId } = c.get('user');
     const supabase = db(c);
     const accessToken = await getValidAccessToken(supabase, userId, c.env);
+
+    // Validate account match
+    await validateUserGoogleAccount(supabase, userId, accessToken);
+
     const files = await driveService.listFiles(accessToken);
     return c.json({ success: true, message: 'Drive files retrieved', data: { files } });
   } catch (err) {
@@ -104,6 +145,21 @@ router.get('/files', authMiddleware, async (c) => {
     }
     if (err instanceof Error && err.message === 'DRIVE_SESSION_EXPIRED') {
       return c.json({ success: false, message: 'Google Drive session expired. Reconnect.' }, 401);
+    }
+    if (err instanceof Error && err.message === 'ACCOUNT_MISMATCH_LOGOUT') {
+      return c.json({
+        success: false,
+        message: 'Your Google account has changed. Drive disconnected for security. Please login again.',
+        logout: true,
+        disconnect_drive: true,
+      }, 401);
+    }
+    if (err instanceof Error && err.message === 'ACCOUNT_MISMATCH') {
+      return c.json({
+        success: false,
+        message: 'Google account mismatch. The account currently logged in is different from the one used to connect Drive. Please reconnect with the correct account.',
+        disconnect_drive: true,
+      }, 401);
     }
     return c.json({ success: false, message: 'Failed to fetch Drive files' }, 500);
   }
@@ -185,11 +241,36 @@ router.post('/sync', authMiddleware, async (c) => {
     if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
       return c.json({ success: false, message: 'Google Drive not connected' }, 400);
     }
+    if (err instanceof Error && err.message === 'ACCOUNT_MISMATCH_LOGOUT') {
+      return c.json({
+        success: false,
+        message: 'Your Google account has changed. Drive disconnected for security. Please login again.',
+        logout: true,
+        disconnect_drive: true,
+      }, 401);
+    }
     if (err instanceof Error && err.message === 'ACCOUNT_MISMATCH') {
-      return c.json({ success: false, message: 'Google account mismatch. Please reconnect Drive.' }, 401);
+      return c.json({
+        success: false,
+        message: 'Google account mismatch. Please reconnect Drive with the correct account.',
+        disconnect_drive: true,
+      }, 401);
     }
     console.error('[Drive sync]', err);
     return c.json({ success: false, message: 'Sync failed' }, 500);
+  }
+});
+
+// POST /api/drive/disconnect — manually disconnect Drive
+router.post('/disconnect', authMiddleware, async (c) => {
+  try {
+    const { userId } = c.get('user');
+    const supabase = db(c);
+    await disconnectDrive(supabase, userId);
+    return c.json({ success: true, message: 'Drive disconnected' });
+  } catch (err) {
+    console.error('[Drive disconnect]', err);
+    return c.json({ success: false, message: 'Failed to disconnect Drive' }, 500);
   }
 });
 

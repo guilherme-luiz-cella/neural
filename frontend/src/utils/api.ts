@@ -31,6 +31,21 @@ api.interceptors.response.use(
   async (error) => {
     const original = error.config as typeof error.config & { _retry?: boolean };
 
+    // Handle account mismatch logout
+    if (error.response?.status === 401 && error.response?.data?.logout) {
+      authUtils.clearTokens();
+      // Clear Drive connection flag
+      localStorage.removeItem('drive_connected');
+      // Redirect to login with message
+      window.location.href = '/login?error=account_mismatch';
+      return Promise.reject(error);
+    }
+
+    // Handle Drive disconnect
+    if (error.response?.status === 401 && error.response?.data?.disconnect_drive) {
+      localStorage.removeItem('drive_connected');
+    }
+
     if (error.response?.status !== 401 || original._retry) return Promise.reject(error);
 
     const refreshToken = authUtils.getRefreshToken();

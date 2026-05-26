@@ -34,14 +34,16 @@ router.get('/', authMiddleware, async (c) => {
     const { userId } = c.get('user');
     const supabase = db(c);
 
-    // Fetch files and projects in parallel; connections need file IDs first
-    const [filesRes, projectsRes] = await Promise.all([
+    // Fetch files, projects, and user settings in parallel
+    const [filesRes, projectsRes, settingsRes] = await Promise.all([
       supabase.from('files').select('id, file_name, file_type, project_id').eq('user_id', userId),
       supabase.from('projects').select('id, name, color_tag').eq('user_id', userId),
+      supabase.from('user_settings').select('enable_semantic_matching, enable_name_matching').eq('user_id', userId).single(),
     ]);
 
     const files = filesRes.data ?? [];
     const projects = projectsRes.data ?? [];
+    const settings = settingsRes.data ?? { enable_semantic_matching: true, enable_name_matching: true };
 
     const fileIds = files.map((f) => f.id);
 
@@ -68,36 +70,40 @@ router.get('/', authMiddleware, async (c) => {
       group: f.project_id ?? 'unassigned',
     }));
 
-    // Semantic links from DB (only strong ones, ≥ 0.1)
-    const semanticLinks = dbConnections
-      .filter((c) => fileIdSet.has(c.file_1_id) && fileIdSet.has(c.file_2_id) && (c.similarity_score ?? 0) >= 0.1)
-      .map((c) => ({
-        source: c.file_1_id,
-        target: c.file_2_id,
-        value: Math.round((c.similarity_score ?? 0.1) * 100) / 100,
-        type: c.connection_type ?? 'semantic',
-      }));
+    // Semantic links from DB (only strong ones, ≥ 0.1) — respect user setting
+    const semanticLinks = settings.enable_semantic_matching
+      ? dbConnections
+          .filter((c) => c.connection_type === 'semantic' && fileIdSet.has(c.file_1_id) && fileIdSet.has(c.file_2_id) && (c.similarity_score ?? 0) >= 0.1)
+          .map((c) => ({
+            source: c.file_1_id,
+            target: c.file_2_id,
+            value: Math.round((c.similarity_score ?? 0.1) * 100) / 100,
+            type: 'semantic',
+          }))
+      : [];
 
-    // Name-based links — computed without crawling (only strong matches, ≥ 0.35)
+    // Name-based links — computed without crawling (only strong matches, ≥ 0.35) — respect user setting
     const tokenMap = new Map(files.map((f) => [f.id, nameTokens(f.file_name)]));
     const existingPairs = new Set(semanticLinks.map((l) => `${l.source}:${l.target}`));
     const nameLinks: typeof semanticLinks = [];
 
-    for (let i = 0; i < files.length; i++) {
-      for (let j = i + 1; j < files.length; j++) {
-        const a = files[i];
-        const b = files[j];
-        const pair = `${a.id}:${b.id}`;
-        if (existingPairs.has(pair)) continue;
+    if (settings.enable_name_matching) {
+      for (let i = 0; i < files.length; i++) {
+        for (let j = i + 1; j < files.length; j++) {
+          const a = files[i];
+          const b = files[j];
+          const pair = `${a.id}:${b.id}`;
+          if (existingPairs.has(pair)) continue;
 
-        const score = nameSimilarity(tokenMap.get(a.id)!, tokenMap.get(b.id)!);
-        if (score >= 0.35) {
-          nameLinks.push({
-            source: a.id,
-            target: b.id,
-            value: Math.round(score * 100) / 100,
-            type: 'name',
-          });
+          const score = nameSimilarity(tokenMap.get(a.id)!, tokenMap.get(b.id)!);
+          if (score >= 0.35) {
+            nameLinks.push({
+              source: a.id,
+              target: b.id,
+              value: Math.round(score * 100) / 100,
+              type: 'name',
+            });
+          }
         }
       }
     }

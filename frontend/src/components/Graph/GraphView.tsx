@@ -49,6 +49,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const [loading, setLoading] = useState(true);
   const [crawling, setCrawling] = useState(false);
   const [crawlMsg, setCrawlMsg] = useState('');
+  const [showClusterLabels, setShowClusterLabels] = useState(true);
 
   const fetchGraph = useCallback(async () => {
     setLoading(true);
@@ -65,7 +66,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   useEffect(() => { fetchGraph(); }, [fetchGraph, crawlTrigger]);
 
   const getClusterCentroids = () => {
-    const map = new Map<string, { cx: number; cy: number; count: number; color: string; name: string }>();
+    const map = new Map<string, { cx: number; cy: number; count: number; color: string; name: string; files: { id: string; name: string }[] }>();
 
     for (const node of nodesRef.current) {
       const key = node.group;
@@ -77,12 +78,18 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         existing.cx += node.x ?? 0;
         existing.cy += node.y ?? 0;
         existing.count++;
+        existing.files.push({ id: node.id, name: node.name });
       } else {
-        map.set(key, { cx: node.x ?? 0, cy: node.y ?? 0, count: 1, color, name });
+        map.set(key, { cx: node.x ?? 0, cy: node.y ?? 0, count: 1, color, name, files: [{ id: node.id, name: node.name }] });
       }
     }
 
-    return [...map.values()].map((c) => ({ ...c, cx: c.cx / c.count, cy: c.cy / c.count }));
+    return [...map.values()].map((c) => ({
+      ...c,
+      cx: c.cx / c.count,
+      cy: c.cy / c.count,
+      files: c.files.slice(0, 5), // Top 5 files
+    }));
   };
 
   const draw = useCallback(() => {
@@ -143,6 +150,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.lineWidth = 3 / zoom;
         ctx.stroke();
 
+        // Cluster name
         const fontSize = Math.max(14, 20 / zoom);
         ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
@@ -150,6 +158,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.fillStyle = '#fff';
         ctx.fillText(cluster.name, cluster.cx, cluster.cy - 16 / zoom);
 
+        // Percentage and count
         const pctFont = Math.max(13, 18 / zoom);
         ctx.font = `bold ${pctFont}px system-ui, sans-serif`;
         ctx.fillStyle = cluster.color;
@@ -159,8 +168,29 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.font = `${subFont}px system-ui, sans-serif`;
         ctx.fillStyle = 'rgba(156,163,175,0.75)';
         ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 18 / zoom);
+
+        // Show top files in cluster (Wikipedia-style) when labels are enabled
+        if (showClusterLabels && zoom < 0.3) {
+          const topFiles = cluster.files.slice(0, 3);
+          const fileListY = cluster.cy + r + 24 / zoom;
+          const fileFont = Math.max(8, 10 / zoom);
+          ctx.font = `${fileFont}px system-ui, sans-serif`;
+          ctx.fillStyle = 'rgba(209,213,219,0.65)';
+          ctx.textAlign = 'center';
+
+          // Draw label "Contains:"
+          ctx.fillText('Contains:', cluster.cx, fileListY);
+
+          // Draw top files
+          for (let fi = 0; fi < topFiles.length; fi++) {
+            const file = topFiles[fi];
+            const fileY = fileListY + (fi + 1) * (10 / zoom);
+            let displayName = file.name;
+            if (displayName.length > 20) displayName = displayName.slice(0, 17) + '…';
+            ctx.fillText(displayName, cluster.cx, fileY);
+          }
+        }
       }
-    } else {
       for (const link of linksRef.current) {
         const s = link.source as GraphNode;
         const tgt = link.target as GraphNode;
@@ -397,6 +427,15 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           </div>
         )}
         <div className="flex items-center gap-3 ml-auto">
+          <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:text-gray-400">
+            <input
+              type="checkbox"
+              checked={showClusterLabels}
+              onChange={(e) => setShowClusterLabels(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-800 cursor-pointer"
+            />
+            Show cluster composition
+          </label>
           <div className="flex items-center gap-1.5 text-xs text-gray-600">
             <div className="w-4 h-0.5 bg-yellow-400/70 rounded" />
             name match

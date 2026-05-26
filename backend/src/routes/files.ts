@@ -4,7 +4,7 @@ import { zipSync, strToU8 } from 'fflate';
 import { Env } from '../types';
 import { authMiddleware, AuthVariables } from '../middleware/auth';
 import { AppError, NotFoundError, ValidationError } from '../utils/errors';
-import { getValidAccessToken } from './driveHelpers';
+import { getValidAccessToken, validateUserGoogleAccount } from './driveHelpers';
 
 type AppEnv = { Bindings: Env; Variables: AuthVariables };
 
@@ -90,6 +90,8 @@ router.get('/:id/media', authMiddleware, async (c) => {
     if (!file?.google_drive_id) return c.json({ success: false, message: 'No Drive file' }, 404);
 
     const accessToken = await getValidAccessToken(supabase, userId, c.env);
+    await validateUserGoogleAccount(supabase, userId, accessToken);
+
     const driveRes = await fetch(
       `https://www.googleapis.com/drive/v3/files/${file.google_drive_id}?alt=media`,
       { headers: { Authorization: `Bearer ${accessToken}` } }

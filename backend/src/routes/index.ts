@@ -8,6 +8,7 @@ import projectsRouter from './projects';
 import crawlerRouter from './crawler';
 import graphRouter from './graph';
 import githubRouter from './github';
+import settingsRouter from './settings';
 
 const router = new Hono<{ Bindings: Env }>();
 
@@ -19,5 +20,6 @@ router.route('/projects', projectsRouter);
 router.route('/crawler', crawlerRouter);
 router.route('/graph', graphRouter);
 router.route('/github', githubRouter);
+router.route('/settings', settingsRouter);
 
 export default router;
