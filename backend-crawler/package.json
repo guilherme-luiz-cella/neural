@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "wrangler dev --port 8788",
     "deploy": "wrangler deploy",
-    "deploy:prod": "wrangler deploy --env production"
+    "deploy:prod": "wrangler deploy --env production",
+    "cli:build": "tsc -p tsconfig.cli.json",
+    "cli:run": "npm run cli:build && node dist/cli.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
@@ -16,6 +18,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240117.0",
+    "@types/node": "^20.0.0",
     "typescript": "^5.3.2",
     "wrangler": "^3.22.1"
   }

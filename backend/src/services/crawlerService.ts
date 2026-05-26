@@ -381,6 +381,30 @@ export const topSubjects = (scored: Map<string, number>, limit = 20): Set<string
   );
 };
 
+// Single-document subjects without needing the global corpus. Uses sublinear
+// TF (log(1+count)) + a baked stop-list. Good enough for incremental
+// indexing — we trade a small ranking quality loss for the ability to
+// crawl one file at a time via a queue consumer without re-reading every
+// other file's content from the DB.
+export const computeSubjectsForContent = (content: string, limit = 24): string[] => {
+  if (!content) return [];
+  const tokens = tokenize(content);
+  if (tokens.length === 0) return [];
+  const bigrams = extractBigrams(tokens);
+  const counts = new Map<string, number>();
+  for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
+  for (const b of bigrams) counts.set(b, (counts.get(b) ?? 0) + 1.5); // bigrams weighted higher
+  const docLen = tokens.length;
+  const scored = new Map<string, number>();
+  for (const [term, c] of counts) {
+    scored.set(term, Math.log(1 + c) / Math.log(1 + docLen));
+  }
+  return [...scored.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([term]) => term);
+};
+
 // Name-based similarity (for file names and titles)
 export const extractNameTokens = (name: string): Set<string> => {
   return new Set(
@@ -515,6 +539,174 @@ export const buildConnections = (params: BuildConnectionsParams): ConnectionRow[
   return toUpsert;
 };
 
+// --- Incremental crawl pipeline (shared by main backend + solo crawler) ---
+
+export type IncrementalCrawlDeps = {
+  // Pulled out so the caller can inject their typed SupabaseClient without
+  // dragging supabase-js types into this file.
+  supabase: {
+    from: (table: string) => {
+      select: (cols: string) => unknown;
+      update: (patch: Record<string, unknown>) => { eq: (col: string, val: unknown) => Promise<unknown> };
+      insert: (rows: unknown[]) => { select: (cols: string) => Promise<{ data: unknown[] | null }> };
+      delete: () => { in: (col: string, vals: unknown[]) => { eq: (col: string, val: unknown) => Promise<unknown> } };
+    };
+  };
+  getAccessToken: () => Promise<string>;
+  userId: string;
+  batchSize: number;
+  concurrency: number;
+  isCrawlable: (mime: string | null) => boolean;
+  semanticThreshold?: number;
+};
+
+export type IncrementalCrawlResult = {
+  crawled: number;
+  connections: number;
+  indexed: number;
+  remaining: number;
+};
+
+const jaccardSets = (a: string[], b: Set<string>): number => {
+  if (a.length === 0 || b.size === 0) return 0;
+  let overlap = 0;
+  const seen = new Set<string>();
+  for (const t of a) { seen.add(t); if (b.has(t)) overlap++; }
+  for (const t of b) seen.add(t);
+  return overlap / seen.size;
+};
+
+const runWithConcurrency = async <T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> => {
+  let cursor = 0;
+  const runners = Array.from({ length: limit }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      try { await worker(items[i]); } catch { /* swallow per-file errors */ }
+    }
+  });
+  await Promise.all(runners);
+};
+
+export const runIncrementalCrawlBatch = async (
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  userId: string,
+  opts: {
+    batchSize: number;
+    concurrency: number;
+    isCrawlable: (mime: string | null) => boolean;
+    getAccessToken: () => Promise<string>;
+    semanticThreshold?: number;
+  },
+): Promise<IncrementalCrawlResult> => {
+  const SEM_THRESHOLD = opts.semanticThreshold ?? 0.08;
+
+  // 1. Pull only pending rows (no content column — heap-safe).
+  const { data: pending, error } = await supabase
+    .from('files')
+    .select('id, file_name, file_type, google_drive_id')
+    .eq('user_id', userId)
+    .is('content', null)
+    .not('google_drive_id', 'is', null)
+    .not('file_type', 'is', null)
+    .limit(500);
+  if (error) throw new Error(error.message);
+
+  type PendingRow = { id: string; file_name: string; file_type: string | null; google_drive_id: string | null };
+  const candidates: PendingRow[] = (pending ?? []).filter((f: PendingRow) => opts.isCrawlable(f.file_type));
+  if (candidates.length === 0) {
+    return { crawled: 0, connections: 0, indexed: 0, remaining: 0 };
+  }
+
+  const toFetch = candidates.slice(0, opts.batchSize);
+  const remaining = Math.max(0, candidates.length - toFetch.length);
+  const accessToken = await opts.getAccessToken();
+
+  // 2. Fetch + extract + tokenize. Persist content AND subjects.
+  type Indexed = { id: string; file_name: string; subjects: string[] };
+  const newlyIndexed: Indexed[] = [];
+  let crawled = 0;
+
+  await runWithConcurrency(toFetch, opts.concurrency, async (f) => {
+    if (!f.google_drive_id || !f.file_type) return;
+    const content = await fetchFileContent(f.google_drive_id, f.file_type, accessToken);
+    if (!content || !content.trim()) return;
+    const subjects = computeSubjectsForContent(content);
+    await supabase
+      .from('files')
+      .update({
+        content,
+        subjects,
+        subjects_updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', f.id);
+    newlyIndexed.push({ id: f.id, file_name: f.file_name, subjects });
+    crawled++;
+  });
+
+  if (newlyIndexed.length === 0) {
+    return { crawled: 0, connections: 0, indexed: 0, remaining };
+  }
+
+  // 3. Load existing subjects index (cheap — just subjects + name).
+  const newIds = new Set(newlyIndexed.map((f) => f.id));
+  const { data: existingRows } = await supabase
+    .from('files')
+    .select('id, file_name, subjects')
+    .eq('user_id', userId)
+    .not('subjects', 'is', null);
+  type ExistingRow = { id: string; file_name: string; subjects: string[] | null };
+  const existing: Indexed[] = (existingRows ?? [])
+    .filter((r: ExistingRow) => r.subjects && r.subjects.length > 0 && !newIds.has(r.id))
+    .map((r: ExistingRow) => ({ id: r.id, file_name: r.file_name, subjects: r.subjects ?? [] }));
+
+  // 4. Compute pairs: new × old, then new × new.
+  type ConnRow = {
+    file_1_id: string;
+    file_2_id: string;
+    similarity_score: number;
+    created_by: string;
+    connection_type: 'semantic';
+  };
+  const conns: ConnRow[] = [];
+  const addPair = (a: Indexed, b: Indexed) => {
+    const sem = jaccardSets(a.subjects, new Set(b.subjects));
+    if (sem >= SEM_THRESHOLD) {
+      conns.push({
+        file_1_id: a.id, file_2_id: b.id,
+        similarity_score: Math.round(sem * 1000) / 1000,
+        created_by: 'crawler', connection_type: 'semantic',
+      });
+    }
+  };
+  for (const fresh of newlyIndexed) for (const old of existing) addPair(fresh, old);
+  for (let i = 0; i < newlyIndexed.length; i++) {
+    for (let j = i + 1; j < newlyIndexed.length; j++) addPair(newlyIndexed[i], newlyIndexed[j]);
+  }
+
+  // 5. Only delete connections for the newly-indexed rows (preserve old).
+  if (newIds.size > 0) {
+    await supabase.from('connections').delete().in('file_1_id', [...newIds]).eq('created_by', 'crawler');
+  }
+  let connCreated = 0;
+  if (conns.length > 0) {
+    const { data: inserted } = await supabase.from('connections').insert(conns).select('id');
+    connCreated = inserted?.length ?? 0;
+  }
+
+  return {
+    crawled,
+    connections: connCreated,
+    indexed: existing.length + newlyIndexed.length,
+    remaining,
+  };
+};
+
 export default {
   fetchFileContent,
   extractKeywords,
@@ -526,4 +718,6 @@ export default {
   computeTfIdf,
   topSubjects,
   buildConnections,
+  computeSubjectsForContent,
+  runIncrementalCrawlBatch,
 };

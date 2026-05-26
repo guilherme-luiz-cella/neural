@@ -15,7 +15,7 @@ FRONTEND_URL = "http://localhost:5173"
 FRONTEND_URL = "https://neural.cella.website,https://neural-network-3d7.pages.dev,*.neural-network-3d7.pages.dev,*.cella.website"
 
 [env.production.triggers]
-crons = ["*/5 * * * *"]
+crons = ["* * * * *"]  # every minute on Workers free plan
 
 # Secrets (set per env via `wrangler secret put NAME --env production`):
 #   SUPABASE_URL
