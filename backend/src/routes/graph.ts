@@ -81,6 +81,8 @@ router.get('/', authMiddleware, async (c) => {
         name: f.file_name,
         file_type: f.file_type,
         project_id: f.project_id,
+        drive_path: (f as { drive_path?: string | null }).drive_path ?? null,
+        github_repo: (f as { github_repo?: string | null }).github_repo ?? null,
         color: g.color,
         group: g.id,
       };

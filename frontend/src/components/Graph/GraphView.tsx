@@ -10,9 +10,101 @@ interface GraphNode extends d3Force.SimulationNodeDatum {
   name: string;
   file_type: string | null;
   project_id: string | null;
+  drive_path: string | null;
+  github_repo: string | null;
   color: string;
   group: string;
 }
+
+type ClusterMode = 'folder' | 'project' | 'type' | 'connected';
+
+const CLUSTER_MODES: { id: ClusterMode; label: string }[] = [
+  { id: 'folder', label: 'Folder' },
+  { id: 'project', label: 'Project' },
+  { id: 'type', label: 'Type' },
+  { id: 'connected', label: 'Connected' },
+];
+
+const PALETTE = ['#60A5FA', '#A78BFA', '#34D399', '#FBBF24', '#F87171', '#F472B6', '#22D3EE', '#FB923C', '#A3E635', '#E879F9'];
+const hashColor = (key: string): string => {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) & 0xffffffff;
+  return PALETTE[Math.abs(h) % PALETTE.length];
+};
+
+const typeLabel = (mime: string | null): string => {
+  if (!mime) return 'unknown';
+  if (mime.includes('google-apps.document')) return 'Google Doc';
+  if (mime.includes('google-apps.spreadsheet')) return 'Google Sheet';
+  if (mime.includes('google-apps.presentation')) return 'Google Slides';
+  if (mime === 'application/pdf') return 'PDF';
+  if (mime.startsWith('image/')) return 'Image';
+  if (mime.startsWith('video/')) return 'Video';
+  if (mime.startsWith('audio/')) return 'Audio';
+  if (mime.startsWith('text/') || mime === 'application/json') return 'Text/Code';
+  if (mime.includes('officedocument')) return 'Office';
+  return mime.split('/')[0] || 'unknown';
+};
+
+const computeConnectedComponents = (nodes: GraphNode[], links: GraphLink[]): Map<string, string> => {
+  const parent = new Map<string, string>();
+  for (const n of nodes) parent.set(n.id, n.id);
+  const find = (id: string): string => {
+    let cur = id;
+    while (parent.get(cur) !== cur) cur = parent.get(cur) as string;
+    parent.set(id, cur);
+    return cur;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const l of links) {
+    const s = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
+    const t = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
+    union(s, t);
+  }
+  const result = new Map<string, string>();
+  for (const n of nodes) result.set(n.id, find(n.id));
+  return result;
+};
+
+const assignGroup = (
+  node: GraphNode,
+  mode: ClusterMode,
+  componentMap: Map<string, string>,
+  projectNameById: Map<string, string>,
+): { id: string; label: string; color: string } => {
+  if (mode === 'project') {
+    if (node.project_id) {
+      const name = projectNameById.get(node.project_id) ?? node.project_id;
+      return { id: `p:${node.project_id}`, label: name, color: hashColor(node.project_id) };
+    }
+    return { id: 'unassigned', label: 'Unassigned', color: '#4B5563' };
+  }
+  if (mode === 'type') {
+    const t = typeLabel(node.file_type);
+    return { id: `t:${t}`, label: t, color: hashColor(t) };
+  }
+  if (mode === 'connected') {
+    const comp = componentMap.get(node.id) ?? node.id;
+    return { id: `c:${comp}`, label: 'Cluster', color: hashColor(comp) };
+  }
+  // folder (default)
+  if (node.project_id) {
+    const name = projectNameById.get(node.project_id) ?? node.project_id;
+    return { id: `p:${node.project_id}`, label: name, color: hashColor(node.project_id) };
+  }
+  if (node.drive_path) {
+    const top = node.drive_path.split('/').filter(Boolean)[0];
+    if (top) return { id: `drive:${top}`, label: top, color: hashColor(top) };
+  }
+  if (node.github_repo) {
+    return { id: `gh:${node.github_repo}`, label: node.github_repo, color: hashColor(node.github_repo) };
+  }
+  return { id: 'unassigned', label: 'Unassigned', color: '#4B5563' };
+};
 
 interface GraphLink extends d3Force.SimulationLinkDatum<GraphNode> {
   source: string | GraphNode;
@@ -52,6 +144,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const [showClusterLabels, setShowClusterLabels] = useState(true);
   const [showLinks, setShowLinks] = useState(true);
   const [linkStrengthFilter, setLinkStrengthFilter] = useState(0.2);
+  const [clusterMode, setClusterMode] = useState<ClusterMode>('folder');
   const showLinksRef = useRef(true);
   const linkFilterRef = useRef(0.2);
 
@@ -305,6 +398,15 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       }))
       .filter((l) => l.source && l.target);
 
+    // Reassign groups based on selected clusterMode.
+    const projectNameById = new Map(graphData.projects.map((p) => [p.id, p.name]));
+    const componentMap = clusterMode === 'connected' ? computeConnectedComponents(nodes, links) : new Map<string, string>();
+    for (const n of nodes) {
+      const g = assignGroup(n, clusterMode, componentMap, projectNameById);
+      n.group = g.id;
+      n.color = g.color;
+    }
+
     nodesRef.current = nodes;
     linksRef.current = links;
 
@@ -313,18 +415,19 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
 
-    // Distinct cluster keys (project ids, drive folders, github repos, etc.)
+    // Distinct cluster keys — depends on the cluster mode.
     const clusterKeys = new Set<string>();
     for (const n of nodes) clusterKeys.add(n.group);
     const clusterList = [...clusterKeys];
 
-    // Cluster centers spread out — radius scales with number of clusters so
-    // they don't overlap visually. Single-cluster case still spreads on a ring
-    // by placing the cluster off-center.
-    const spreadR = Math.max(
-      420,
-      Math.min(canvas.width, canvas.height) * (clusterList.length > 1 ? 0.42 : 0.18)
-    );
+    // Spread cluster centers far enough apart that they don't visually
+    // overlap even with hundreds of nodes per cluster. Radius grows with both
+    // canvas size and cluster count so many small clusters don't pile up.
+    const minDim = Math.min(canvas.width, canvas.height);
+    const spreadR = clusterList.length === 1
+      ? minDim * 0.08
+      : Math.max(540, minDim * (0.5 + Math.min(clusterList.length, 12) * 0.02));
+
     const groupCenters = new Map<string, { x: number; y: number }>();
     clusterList.forEach((key, i) => {
       const angle = (i / clusterList.length) * Math.PI * 2 - Math.PI / 2;
@@ -358,10 +461,10 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           .distance((l) => isCrossCluster(l as GraphLink) ? 420 + (1 - (l as GraphLink).value) * 120 : 60 + (1 - (l as GraphLink).value) * 40)
           .strength((l) => isCrossCluster(l as GraphLink) ? (l as GraphLink).value * 0.04 : (l as GraphLink).value * 0.6)
       )
-      .force('charge', d3Force.forceManyBody().strength(-340).distanceMax(360))
-      .force('collision', d3Force.forceCollide(NODE_RADIUS + 18).strength(0.95).iterations(4))
-      .force('x', d3Force.forceX<GraphNode>((d) => groupCenters.get(d.group)?.x ?? cx).strength(0.14))
-      .force('y', d3Force.forceY<GraphNode>((d) => groupCenters.get(d.group)?.y ?? cy).strength(0.14))
+      .force('charge', d3Force.forceManyBody().strength(-380).distanceMax(440))
+      .force('collision', d3Force.forceCollide(NODE_RADIUS + 22).strength(0.95).iterations(4))
+      .force('x', d3Force.forceX<GraphNode>((d) => groupCenters.get(d.group)?.x ?? cx).strength(0.2))
+      .force('y', d3Force.forceY<GraphNode>((d) => groupCenters.get(d.group)?.y ?? cy).strength(0.2))
       .alphaDecay(0.022)
       .velocityDecay(0.42)
       .on('tick', draw);
@@ -406,7 +509,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       canvas.onclick = null;
       canvas.onmousemove = null;
     };
-  }, [graphData, draw, onNodeClick]);
+  }, [graphData, draw, onNodeClick, clusterMode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -427,10 +530,24 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
   const handleCrawl = async () => {
     setCrawling(true);
-    setCrawlMsg('');
+    setCrawlMsg('Crawling…');
     try {
-      const res = await api.post('/crawler/run');
-      setCrawlMsg(res.data.message);
+      let totalCrawled = 0;
+      let rounds = 0;
+      const maxRounds = 60; // hard safety cap (40 files * 60 = 2400)
+      while (rounds < maxRounds) {
+        const res = await api.post('/crawler/run');
+        const data = res.data?.data ?? {};
+        totalCrawled += data.crawled ?? 0;
+        const remaining = data.remaining ?? 0;
+        setCrawlMsg(
+          remaining > 0
+            ? `Crawling… ${totalCrawled} done · ${remaining} pending`
+            : res.data.message
+        );
+        if (remaining === 0) break;
+        rounds++;
+      }
       fetchGraph();
     } catch (err) {
       const axiosErr = err as AxiosError<{ message: string }>;
@@ -459,18 +576,21 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       </div>
 
       <div className="flex gap-4 mb-3 flex-wrap shrink-0">
-        {graphData.projects.map((p) => (
-          <div key={p.id} className="flex items-center gap-1.5 text-xs text-gray-500">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.color_tag ?? '#6B7280' }} />
-            {p.name}
-          </div>
-        ))}
-        {graphData.nodes.some((n) => n.group === 'unassigned') && (
-          <div className="flex items-center gap-1.5 text-xs text-gray-500">
-            <div className="w-2.5 h-2.5 rounded-full bg-gray-600" />
-            Unassigned
-          </div>
-        )}
+        <div className="inline-flex bg-gray-900 border border-gray-800 rounded-md p-0.5 shrink-0">
+          {CLUSTER_MODES.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setClusterMode(m.id)}
+              className={`px-3 py-1 text-[11px] rounded transition-colors ${
+                clusterMode === m.id
+                  ? 'bg-gray-700 text-white'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-3 ml-auto flex-wrap">
           <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:text-gray-400">
             <input
