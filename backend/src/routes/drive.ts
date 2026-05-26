@@ -3,6 +3,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import { createClient } from '@supabase/supabase-js';
 import { Env } from '../types';
 import * as driveService from '../services/googleDriveService';
+import * as crawlerService from '../services/crawlerService';
 import { authMiddleware, AuthVariables } from '../middleware/auth';
 import { getValidAccessToken, validateUserGoogleAccount, disconnectDrive } from './driveHelpers';
 
@@ -17,6 +18,15 @@ const makeDriveState = (userId: string, secret: string, origin: string) =>
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime('10m')
     .sign(enc(secret));
+
+const driveCallbackError = (err: unknown): string => {
+  if (!(err instanceof Error)) return 'callback_failed';
+  const message = err.message.toLowerCase();
+  if (message.includes('google token exchange failed')) return 'token_exchange_failed';
+  if (message.includes('failed to get google account info')) return 'account_email_scope_failed';
+  if (message.includes('invalid state') || message.includes('jwt')) return 'state_expired';
+  return 'callback_failed';
+};
 
 const verifyDriveState = async (state: string, secret: string) => {
   const { payload } = await jwtVerify(state, enc(secret));
@@ -75,7 +85,7 @@ router.get('/callback', async (c) => {
     return c.redirect(`${frontendBase}/dashboard?drive_connected=true`);
   } catch (err) {
     console.error('[Drive callback]', err);
-    return c.redirect(`${fallbackBase}/dashboard?drive_error=callback_failed`);
+    return c.redirect(`${fallbackBase}/dashboard?drive_error=${driveCallbackError(err)}`);
   }
 });
 
@@ -203,9 +213,6 @@ router.post('/sync', authMiddleware, async (c) => {
       await supabase.from('files').update({ file_name: u.file_name, file_type: u.file_type }).eq('id', u.id);
       synced++;
     }
-
-    // Import crawler service to fetch content for newly synced files
-    const { default: crawlerService } = await import('../services/crawlerService.ts');
 
     // Fetch and store content for newly inserted files
     if (toInsert.length > 0) {

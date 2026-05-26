@@ -110,9 +110,12 @@ router.get('/callback', async (c) => {
 
     const tokens = await generateTokenPair(user.id, user.email, c.env.JWT_SECRET);
 
-    return c.redirect(
-      `${origin}/auth/callback?access_token=${tokens.access_token}&refresh_token=${tokens.refresh_token}`
-    );
+    const params = new URLSearchParams({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+    });
+
+    return c.redirect(`${origin}/auth/callback#${params}`);
   } catch (err) {
     console.error('[Google login callback]', err);
     return c.redirect(`${fallbackBase}/login?google_error=login_failed`);

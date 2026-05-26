@@ -9,8 +9,9 @@ export const GoogleAuthCallback = () => {
   const { loadUser } = useAuth();
 
   useEffect(() => {
-    const accessToken = searchParams.get('access_token');
-    const refreshToken = searchParams.get('refresh_token');
+    const fragmentParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const accessToken = searchParams.get('access_token') ?? fragmentParams.get('access_token');
+    const refreshToken = searchParams.get('refresh_token') ?? fragmentParams.get('refresh_token');
     const error = searchParams.get('google_error');
 
     if (error || !accessToken || !refreshToken) {
@@ -18,6 +19,7 @@ export const GoogleAuthCallback = () => {
       return;
     }
 
+    window.history.replaceState(null, document.title, '/auth/callback');
     authUtils.setTokens(accessToken, refreshToken);
     loadUser().then(() => navigate('/dashboard', { replace: true }));
   }, [searchParams, navigate, loadUser]);

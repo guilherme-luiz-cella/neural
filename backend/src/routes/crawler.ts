@@ -53,39 +53,14 @@ router.post('/run', authMiddleware, async (c) => {
       })
     );
 
-    // Compute pairwise similarity (semantic + name-based)
     const ids = [...contentMap.keys()];
-    const kwMap = new Map(ids.map((id) => [id, crawler.extractKeywords(contentMap.get(id)!)]));
-
-    const SEMANTIC_THRESHOLD = 0.08;
-    const NAME_THRESHOLD = 0.6;
-    const toUpsert: Array<{ file_1_id: string; file_2_id: string; similarity_score: number; created_by: string; connection_type: string }> = [];
-
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const semanticScore = crawler.computeSimilarity(kwMap.get(ids[i])!, kwMap.get(ids[j])!);
-        const nameScore = crawler.computeNameSimilarity(namesMap.get(ids[i])!, namesMap.get(ids[j])!);
-
-        // Create connection if either semantic or name-based similarity is high enough
-        if (semanticScore >= SEMANTIC_THRESHOLD) {
-          toUpsert.push({
-            file_1_id: ids[i],
-            file_2_id: ids[j],
-            similarity_score: Math.round(semanticScore * 1000) / 1000,
-            created_by: 'crawler',
-            connection_type: 'semantic',
-          });
-        } else if (nameScore >= NAME_THRESHOLD) {
-          toUpsert.push({
-            file_1_id: ids[i],
-            file_2_id: ids[j],
-            similarity_score: Math.round(nameScore * 1000) / 1000,
-            created_by: 'crawler',
-            connection_type: 'name',
-          });
-        }
-      }
-    }
+    const toUpsert = crawler.buildConnections({
+      ids,
+      contentMap,
+      namesMap,
+      enableSemantic: true,
+      enableName: true,
+    });
 
     let connCreated = 0;
     if (toUpsert.length > 0) {

@@ -17,3 +17,4 @@ GITHUB_REDIRECT_URI = "https://api.neural.cella.website/api/github/callback"
 
 # Secrets go in .dev.vars (local) or via `wrangler secret put` (production)
 # Never put secret values in this file
+

@@ -7,6 +7,15 @@ import apiRouter from './routes';
 const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', async (c, next) => {
+  await next();
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+});
+
+app.use('*', async (c, next) => {
   const allowed = (c.env.FRONTEND_URL || '*')
     .split(',')
     .map((o) => o.trim());

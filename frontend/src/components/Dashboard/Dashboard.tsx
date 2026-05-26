@@ -24,6 +24,17 @@ interface OpenTab {
 
 type View = 'editor' | 'graph';
 
+const driveErrorMessage = (error: string | null) => {
+  const messages: Record<string, string> = {
+    access_denied: 'Google Drive access was denied.',
+    token_exchange_failed: 'Google rejected the Drive callback. Check the OAuth redirect URI in Google Cloud.',
+    account_email_scope_failed: 'Google Drive connected without email permission. Try reconnecting and approve the updated permissions.',
+    state_expired: 'Google Drive connection expired. Start the connection again.',
+    callback_failed: 'Failed to connect Google Drive. Try again.',
+  };
+  return messages[error ?? ''] ?? 'Failed to connect Google Drive. Try again.';
+};
+
 const isMediaFile = (fileType: string | null) =>
   !!fileType && (
     fileType.startsWith('image/') ||
@@ -92,6 +103,21 @@ export const Dashboard = () => {
     fetchProjects();
   }, [fetchFiles, fetchProjects]);
 
+  const syncDriveFiles = useCallback(async (startMessage?: string) => {
+    setSyncing(true);
+    setSyncMsg(startMessage ?? '');
+    try {
+      const res = await api.post('/drive/sync');
+      setSyncMsg(res.data.message);
+      await fetchFiles();
+    } catch {
+      setSyncMsg('Drive connected, but file sync failed. Click Sync to try again.');
+      await fetchFiles();
+    } finally {
+      setSyncing(false);
+    }
+  }, [fetchFiles]);
+
   useEffect(() => {
     fetchDriveStatus();
     fetchFiles();
@@ -104,10 +130,10 @@ export const Dashboard = () => {
       setBanner('Google Drive connected.');
       setDriveConnected(true);
       setSearchParams({}, { replace: true });
-      fetchFiles();
+      syncDriveFiles('Google Drive connected. Syncing files...');
     }
     if (searchParams.get('drive_error')) {
-      setBanner('Failed to connect Google Drive. Try again.');
+      setBanner(driveErrorMessage(searchParams.get('drive_error')));
       setSearchParams({}, { replace: true });
     }
     if (searchParams.get('github_connected') === 'true') {
@@ -119,7 +145,7 @@ export const Dashboard = () => {
       setBanner(`GitHub error: ${searchParams.get('github_error')}`);
       setSearchParams({}, { replace: true });
     }
-  }, [searchParams, setSearchParams, fetchFiles, fetchGithubStatus]);
+  }, [searchParams, setSearchParams, fetchFiles, fetchGithubStatus, syncDriveFiles]);
 
   const handleFileOpen = (file: DBFile) => {
     setView('editor');
@@ -142,17 +168,7 @@ export const Dashboard = () => {
   };
 
   const handleSyncDrive = async () => {
-    setSyncing(true);
-    setSyncMsg('');
-    try {
-      const res = await api.post('/drive/sync');
-      setSyncMsg(res.data.message);
-      fetchFiles();
-    } catch {
-      setSyncMsg('Sync failed');
-    } finally {
-      setSyncing(false);
-    }
+    await syncDriveFiles();
   };
 
   const handleConnectGitHub = async () => {

@@ -26,6 +26,39 @@ type FileRecord = {
   updated_at?: string;
 };
 
+type CreateFileBody = {
+  file_name: string;
+  file_type?: string;
+  project_id?: string;
+  content?: string;
+};
+
+type UpdateFileBody = {
+  file_name?: string;
+  content?: string;
+  project_id?: string | null;
+};
+
+export const buildCreateFilePayload = (userId: string, body: CreateFileBody) => ({
+  user_id: userId,
+  file_name: body.file_name.trim(),
+  file_type: body.file_type,
+  project_id: body.project_id,
+  content: body.content,
+});
+
+export const buildUpdateFilePayload = (body: UpdateFileBody) => {
+  const payload: UpdateFileBody & { updated_at: string } = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (body.file_name !== undefined) payload.file_name = body.file_name.trim();
+  if (body.content !== undefined) payload.content = body.content;
+  if (body.project_id !== undefined) payload.project_id = body.project_id;
+
+  return payload;
+};
+
 export const loadFileContentIfMissing = async (params: {
   supabase: ReturnType<typeof createClient>;
   userId: string;
@@ -126,15 +159,15 @@ router.get('/:id/media', authMiddleware, async (c) => {
 
     if (!driveRes.ok) return c.json({ success: false, message: 'Drive fetch failed' }, 502);
 
-    const body = await driveRes.arrayBuffer();
     const contentType = file.file_type ?? driveRes.headers.get('content-type') ?? 'application/octet-stream';
+    const headers: Record<string, string> = {
+      'Content-Type': contentType,
+      'Cache-Control': 'private, max-age=3600',
+    };
+    const contentLength = driveRes.headers.get('content-length');
+    if (contentLength) headers['Content-Length'] = contentLength;
 
-    return new Response(body, {
-      headers: {
-        'Content-Type': contentType,
-        'Cache-Control': 'private, max-age=3600',
-      },
-    });
+    return new Response(driveRes.body, { headers });
   } catch (err) { return onError(err, c); }
 });
 
@@ -203,12 +236,12 @@ router.post('/download-zip', authMiddleware, async (c) => {
 router.post('/', authMiddleware, async (c) => {
   try {
     const { userId } = c.get('user');
-    const body = await c.req.json<{ file_name: string; file_type?: string; project_id?: string; content?: string }>();
+    const body = await c.req.json<CreateFileBody>();
     if (!body.file_name?.trim()) throw new ValidationError('file_name is required');
 
     const { data, error } = await db(c)
       .from('files')
-      .insert({ user_id: userId, ...body })
+      .insert(buildCreateFilePayload(userId, body))
       .select('id, file_name, file_type, project_id, created_at, updated_at')
       .single();
 
@@ -222,11 +255,11 @@ router.put('/:id', authMiddleware, async (c) => {
   try {
     const { userId } = c.get('user');
     const id = c.req.param('id');
-    const body = await c.req.json<{ file_name?: string; content?: string; project_id?: string | null }>();
+    const body = await c.req.json<UpdateFileBody>();
 
     const { data, error } = await db(c)
       .from('files')
-      .update({ ...body, updated_at: new Date().toISOString() })
+      .update(buildUpdateFilePayload(body))
       .eq('id', id)
       .eq('user_id', userId)
       .select('id, file_name, file_type, project_id, updated_at')

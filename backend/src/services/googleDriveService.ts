@@ -18,6 +18,7 @@ export const getAuthUrl = (clientId: string, redirectUri: string, state: string)
     redirect_uri: redirectUri,
     response_type: 'code',
     scope: [
+      'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/drive.readonly',
       'https://www.googleapis.com/auth/drive.metadata.readonly',
     ].join(' '),

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import * as authUtils from '../../utils/auth';
 
 interface Props {
   fileId: string;
@@ -12,7 +13,7 @@ export const MediaViewer = ({ fileId, fileName, fileType }: Props) => {
 
   useEffect(() => {
     let objectUrl: string | null = null;
-    const token = localStorage.getItem('access_token');
+    const token = authUtils.getAccessToken();
     fetch(`${import.meta.env.VITE_API_URL}/files/${fileId}/media`, {
       headers: { Authorization: `Bearer ${token}` },
     })

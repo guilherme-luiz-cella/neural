@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { api } from '../../utils/api';
 import { AxiosError } from 'axios';
+import { AuthShell } from './AuthShell';
 
 export const LoginPage = () => {
   const { login } = useAuth();
@@ -46,19 +47,27 @@ export const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950">
-      <div className="w-full max-w-md p-8 bg-gray-900 rounded-xl border border-gray-800">
-        <h1 className="text-2xl font-bold text-white mb-1">Neural Network</h1>
-        <p className="text-gray-400 text-sm mb-8">Sign in to your account</p>
-
+    <AuthShell
+      eyebrow="Welcome back"
+      title="Sign in"
+      subtitle="Use your account or Google login to open your workspace."
+      footer={(
+        <>
+          No account?{' '}
+          <Link to="/register" className="text-blue-400 hover:text-blue-300 transition-colors">
+            Register
+          </Link>
+        </>
+      )}
+    >
         {successMessage && (
-          <div className="mb-4 p-3 bg-green-900/50 border border-green-700 text-green-300 rounded-lg text-sm">
+          <div className="mb-4 border border-green-700 bg-green-900/40 p-3 text-sm text-green-300">
             {successMessage}
           </div>
         )}
 
         {error && (
-          <div className="mb-4 p-3 bg-red-900/50 border border-red-700 text-red-300 rounded-lg text-sm">
+          <div className="mb-4 border border-red-700 bg-red-900/40 p-3 text-sm text-red-300">
             {error}
           </div>
         )}
@@ -70,9 +79,10 @@ export const LoginPage = () => {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+              className="w-full border border-gray-700 bg-gray-800 px-3 py-2.5 text-white placeholder-gray-500 outline-none transition-colors focus:border-blue-500"
               placeholder="you@example.com"
               required
+              name="email"
               autoComplete="email"
             />
           </div>
@@ -83,9 +93,10 @@ export const LoginPage = () => {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+              className="w-full border border-gray-700 bg-gray-800 px-3 py-2.5 text-white placeholder-gray-500 outline-none transition-colors focus:border-blue-500"
               placeholder="••••••••"
               required
+              name="current-password"
               autoComplete="current-password"
             />
           </div>
@@ -93,7 +104,7 @@ export const LoginPage = () => {
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors"
+            className="w-full bg-blue-600 px-4 py-2.5 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-800"
           >
             {isLoading ? 'Signing in…' : 'Sign in'}
           </button>
@@ -109,7 +120,7 @@ export const LoginPage = () => {
           type="button"
           onClick={handleGoogleLogin}
           disabled={googleLoading}
-          className="mt-4 w-full py-2 px-4 bg-white hover:bg-gray-100 disabled:opacity-60 disabled:cursor-not-allowed text-gray-800 font-medium rounded-lg flex items-center justify-center gap-2 transition-colors"
+          className="mt-4 flex w-full items-center justify-center gap-2 bg-white px-4 py-2.5 font-medium text-gray-900 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <svg className="w-4 h-4" viewBox="0 0 24 24">
             <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -119,24 +130,6 @@ export const LoginPage = () => {
           </svg>
           {googleLoading ? 'Redirecting…' : 'Continue with Google'}
         </button>
-
-        <p className="mt-6 text-center text-gray-500 text-sm">
-          No account?{' '}
-          <Link to="/register" className="text-blue-400 hover:text-blue-300 transition-colors">
-            Register
-          </Link>
-        </p>
-
-        <div className="mt-6 pt-6 border-t border-gray-800 flex justify-center gap-4 text-xs">
-          <Link to="/privacy" className="text-gray-600 hover:text-gray-400 transition-colors">
-            Privacy Policy
-          </Link>
-          <span className="text-gray-700">·</span>
-          <Link to="/terms" className="text-gray-600 hover:text-gray-400 transition-colors">
-            Terms of Service
-          </Link>
-        </div>
-      </div>
-    </div>
+    </AuthShell>
   );
 };

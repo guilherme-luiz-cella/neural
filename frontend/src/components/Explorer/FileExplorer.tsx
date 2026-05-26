@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { DBFile, Project } from '../../types';
 import { api } from '../../utils/api';
+import * as authUtils from '../../utils/auth';
 import { AxiosError } from 'axios';
 
 interface Props {
@@ -168,7 +169,7 @@ export const FileExplorer = ({
   };
 
   const handleDownload = (file: DBFile) => {
-    const token = localStorage.getItem('access_token');
+    const token = authUtils.getAccessToken();
     const url = `${import.meta.env.VITE_API_URL}/files/${file.id}/download`;
     fetch(url, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.blob())
@@ -187,7 +188,7 @@ export const FileExplorer = ({
 
   const handleDownloadZip = async (projectId?: string) => {
     const body = projectId ? { project_id: projectId } : { file_ids: files.map((f) => f.id) };
-    const token = localStorage.getItem('access_token');
+    const token = authUtils.getAccessToken();
     const res = await fetch(`${import.meta.env.VITE_API_URL}/files/download-zip`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
