@@ -126,6 +126,16 @@ export const LoginPage = () => {
             Register
           </Link>
         </p>
+
+        <div className="mt-6 pt-6 border-t border-gray-800 flex justify-center gap-4 text-xs">
+          <Link to="/privacy" className="text-gray-600 hover:text-gray-400 transition-colors">
+            Privacy Policy
+          </Link>
+          <span className="text-gray-700">·</span>
+          <Link to="/terms" className="text-gray-600 hover:text-gray-400 transition-colors">
+            Terms of Service
+          </Link>
+        </div>
       </div>
     </div>
   );

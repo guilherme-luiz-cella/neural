@@ -4,6 +4,8 @@ import { LoginPage } from './components/Auth/LoginPage';
 import { RegisterPage } from './components/Auth/RegisterPage';
 import { Dashboard } from './components/Dashboard/Dashboard';
 import { GoogleAuthCallback } from './pages/GoogleAuthCallback';
+import { PrivacyPolicy } from './pages/PrivacyPolicy';
+import { TermsOfService } from './pages/TermsOfService';
 
 const Spinner = () => (
   <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -30,6 +32,8 @@ const AppRoutes = () => (
     <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
     <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
     <Route path="/auth/callback" element={<GoogleAuthCallback />} />
+    <Route path="/privacy" element={<PrivacyPolicy />} />
+    <Route path="/terms" element={<TermsOfService />} />
   </Routes>
 );
 
