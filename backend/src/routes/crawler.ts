@@ -51,33 +51,44 @@ const runWithConcurrency = async <T>(
   await Promise.all(runners);
 };
 
-// POST /api/crawler/run — incremental batch crawl + connection insert.
-// Heavy lifting lives in crawlerService.runIncrementalCrawlBatch which is
-// shared with the solo crawler worker and the Node CLI runner.
+// POST /api/crawler/run — status-only on the main API. Doing real work here
+// blows the Workers free-plan CPU limit (PDF parsing alone is hundreds of
+// ms). The crawler worker's cron (every minute) drains the pending queue
+// in the background. Frontend can poll this for progress, or hit the
+// solo crawler worker's /run-all for an in-band background kick.
 router.post('/run', authMiddleware, async (c) => {
   try {
     const { userId } = c.get('user');
     const supabase = db(c);
 
-    const result = await crawler.runIncrementalCrawlBatch(supabase, userId, {
-      batchSize: CRAWL_BATCH,
-      concurrency: CRAWL_CONCURRENCY,
-      isCrawlable,
-      getAccessToken: () => getValidAccessToken(supabase, userId, c.env),
-    });
+    const { count: pending } = await supabase
+      .from('files')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .is('content', null)
+      .not('google_drive_id', 'is', null)
+      .not('file_type', 'is', null);
 
-    const tail = result.remaining > 0 ? ` · ${result.remaining}+ pending (run again)` : '';
+    const { count: indexed } = await supabase
+      .from('files')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .not('content', 'is', null);
+
+    const remaining = pending ?? 0;
+    const done = remaining === 0;
+    const message = done
+      ? 'All files indexed'
+      : `Crawling in background · ${indexed ?? 0} indexed · ${remaining} pending. Cron processes ~40/min — check the graph again shortly.`;
+
     return c.json({
       success: true,
-      message: `Crawled ${result.crawled} new · ${result.connections} new connections${tail}`,
-      data: result,
+      message,
+      data: { crawled: 0, connections: 0, indexed: indexed ?? 0, remaining, done },
     });
   } catch (err) {
-    if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
-      return c.json({ success: false, message: 'Google Drive not connected' }, 400);
-    }
-    console.error('[Crawler]', err);
-    return c.json({ success: false, message: 'Crawler failed' }, 500);
+    console.error('[Crawler:status]', err);
+    return c.json({ success: false, message: 'Crawler status failed' }, 500);
   }
 });
 

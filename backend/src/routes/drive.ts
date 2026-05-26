@@ -3,7 +3,6 @@ import { SignJWT, jwtVerify } from 'jose';
 import { createClient } from '@supabase/supabase-js';
 import { Env } from '../types';
 import * as driveService from '../services/googleDriveService';
-import * as crawlerService from '../services/crawlerService';
 import { authMiddleware, AuthVariables } from '../middleware/auth';
 import { getValidAccessToken, validateUserGoogleAccount, disconnectDrive } from './driveHelpers';
 
@@ -225,46 +224,36 @@ router.post('/sync', authMiddleware, async (c) => {
         drive_path: drivePath(f),
       }));
 
-    let synced = 0;
+    // Bulk-insert new rows. We do NOT fetch content here — content extraction
+    // (PDF parsing, unzip, etc.) is CPU-heavy and would blow the Worker CPU
+    // limit on free plan. The crawler worker's cron picks up content async.
+    let inserted = 0;
     if (toInsert.length > 0) {
       const { data } = await supabase.from('files').insert(toInsert).select('id');
-      synced += data?.length ?? 0;
-    }
-    for (const u of toUpdate) {
-      await supabase.from('files').update({ file_name: u.file_name, file_type: u.file_type, drive_path: u.drive_path }).eq('id', u.id);
-      synced++;
+      inserted = data?.length ?? 0;
     }
 
-    // Fetch and store content for newly inserted files
-    if (toInsert.length > 0) {
-      const { data: newFiles } = await supabase
-        .from('files')
-        .select('id, google_drive_id, file_type')
-        .eq('user_id', userId)
-        .in('file_name', toInsert.map((f) => f.file_name))
-        .not('google_drive_id', 'is', null);
-
-      if (newFiles) {
-        await Promise.allSettled(
-          newFiles.map(async (f) => {
-            if (!f.google_drive_id || !f.file_type) return;
-            try {
-              const content = await crawlerService.fetchFileContent(f.google_drive_id, f.file_type, accessToken);
-              if (content) {
-                await supabase
-                  .from('files')
-                  .update({ content })
-                  .eq('id', f.id);
-              }
-            } catch {
-              // Silently fail for files that can't be fetched
-            }
-          })
-        );
-      }
+    // Bulk-update existing rows. Single statement per row would burn CPU, so
+    // we batch updates client-side using upsert on google_drive_id.
+    let updated = 0;
+    if (toUpdate.length > 0) {
+      const upsertPayload = toUpdate.map((u) => ({
+        id: u.id,
+        user_id: userId,
+        file_name: u.file_name,
+        file_type: u.file_type,
+        drive_path: u.drive_path,
+      }));
+      const { data } = await supabase.from('files').upsert(upsertPayload, { onConflict: 'id' }).select('id');
+      updated = data?.length ?? 0;
     }
 
-    return c.json({ success: true, message: `Synced ${synced} files`, data: { synced_count: synced } });
+    const synced = inserted + updated;
+    return c.json({
+      success: true,
+      message: `Synced ${synced} files (${inserted} new, ${updated} updated). Content will be crawled in the background.`,
+      data: { synced_count: synced, inserted, updated },
+    });
   } catch (err) {
     if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
       return c.json({ success: false, message: 'Google Drive not connected' }, 400);
