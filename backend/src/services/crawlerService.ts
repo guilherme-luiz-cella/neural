@@ -1,4 +1,5 @@
 import { strFromU8, unzipSync } from 'fflate';
+import { extractText, getDocumentProxy } from 'unpdf';
 
 const EXPORT_MIME: Record<string, string> = {
   'application/vnd.google-apps.document': 'text/plain',
@@ -114,7 +115,7 @@ const extractReadableStrings = (buffer: ArrayBuffer): string => {
     .replace(/\s+/g, ' ');
 };
 
-const extractPdfText = (buffer: ArrayBuffer): string => {
+const extractPdfTextRegex = (buffer: ArrayBuffer): string => {
   const raw = decodeText(buffer);
 
   // PDF text operators: Tj (show), ' (next line + show), " (next line + show with spacing), TJ (array of strings/spacing)
@@ -194,13 +195,27 @@ const extractMp3Tags = (buffer: ArrayBuffer): string => {
   return values.join('\n');
 };
 
-const extractByMimeType = (buffer: ArrayBuffer, mimeType: string): string => {
+const extractPdfTextUnpdf = async (buffer: ArrayBuffer): Promise<string> => {
+  try {
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const result = await extractText(pdf, { mergePages: true });
+    const text = typeof result.text === 'string'
+      ? result.text
+      : Array.isArray(result.text) ? result.text.join('\n') : '';
+    return text;
+  } catch {
+    // unpdf failed (encrypted/corrupt) — fall back to regex extractor
+    return extractPdfTextRegex(buffer);
+  }
+};
+
+const extractByMimeType = async (buffer: ArrayBuffer, mimeType: string): Promise<string> => {
   if (mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'application/xml') {
     const text = decodeText(buffer);
     return mimeType.includes('html') || mimeType.includes('xml') ? stripMarkup(text) : text;
   }
 
-  if (mimeType === 'application/pdf') return extractPdfText(buffer);
+  if (mimeType === 'application/pdf') return extractPdfTextUnpdf(buffer);
   if (mimeType.includes('officedocument')) return extractOpenXmlText(buffer, mimeType);
   if (mimeType === 'audio/mpeg' || mimeType === 'audio/mp3') return extractMp3Tags(buffer);
   if (mimeType.startsWith('audio/') || mimeType.startsWith('video/')) return extractReadableStrings(buffer);
@@ -243,6 +258,17 @@ const fetchDriveMetadata = async (fileId: string, accessToken: string): Promise<
   return res.json();
 };
 
+// Drive can export native Google Apps formats. Anything else is downloaded raw
+// and parsed locally. We always attempt a download for files Google can't
+// export, so the crawler covers every file type the user uploaded.
+const isBinaryReadable = (mimeType: string): boolean =>
+  mimeType.startsWith('text/')
+  || mimeType.startsWith('application/')
+  || mimeType.startsWith('audio/')
+  || mimeType.startsWith('video/')
+  || mimeType.startsWith('font/')
+  || mimeType.startsWith('message/');
+
 export const fetchFileContent = async (
   fileId: string,
   mimeType: string,
@@ -250,7 +276,8 @@ export const fetchFileContent = async (
 ): Promise<string | null> => {
   const explicit = EXPORT_MIME[mimeType];
   const exportMime = explicit
-    ?? (mimeType.startsWith('text/') ? '__download__' : undefined);
+    ?? (mimeType.startsWith('text/') ? '__download__'
+      : isBinaryReadable(mimeType) ? '__download__' : undefined);
   const metadata = await fetchDriveMetadata(fileId, accessToken);
   if (!exportMime) return normalizeExtractedContent([metadataToContent(metadata)]);
 
@@ -271,7 +298,7 @@ export const fetchFileContent = async (
     if (!res.ok) return normalizeExtractedContent([metadataToContent(metadata)]);
 
     const content = exportMime === '__download__'
-      ? extractByMimeType(await res.arrayBuffer(), mimeType)
+      ? await extractByMimeType(await res.arrayBuffer(), mimeType)
       : await res.text();
 
     return normalizeExtractedContent([metadataToContent(metadata), content]);
