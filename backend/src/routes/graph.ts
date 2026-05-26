@@ -36,7 +36,7 @@ router.get('/', authMiddleware, async (c) => {
 
     // Fetch files, projects, and user settings in parallel
     const [filesRes, projectsRes, settingsRes] = await Promise.all([
-      supabase.from('files').select('id, file_name, file_type, project_id').eq('user_id', userId),
+      supabase.from('files').select('id, file_name, file_type, project_id, drive_path, github_repo').eq('user_id', userId),
       supabase.from('projects').select('id, name, color_tag').eq('user_id', userId),
       supabase.from('user_settings').select('enable_semantic_matching, enable_name_matching').eq('user_id', userId).single(),
     ]);
@@ -58,17 +58,59 @@ router.get('/', authMiddleware, async (c) => {
     const dbConnections = connectionsRes.data ?? [];
     const fileIdSet = new Set(fileIds);
 
-    // Build node list
+    // Build node list. Cluster files first by project, then by Drive top-level
+    // folder, then by GitHub repo, falling back to "unassigned" so disparate
+    // sources don't all collapse into one blob.
     const projectColorMap = new Map(projects.map((p) => [p.id, p.color_tag ?? '#6B7280']));
 
-    const nodes = files.map((f) => ({
-      id: f.id,
-      name: f.file_name,
-      file_type: f.file_type,
-      project_id: f.project_id,
-      color: f.project_id ? (projectColorMap.get(f.project_id) ?? '#6B7280') : '#4B5563',
-      group: f.project_id ?? 'unassigned',
-    }));
+    const PALETTE = ['#60A5FA', '#A78BFA', '#34D399', '#FBBF24', '#F87171', '#F472B6', '#22D3EE', '#FB923C', '#A3E635', '#E879F9'];
+    const hashColor = (key: string): string => {
+      let h = 0;
+      for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) & 0xffffffff;
+      return PALETTE[Math.abs(h) % PALETTE.length];
+    };
+
+    const deriveGroup = (f: typeof files[number]): { id: string; label: string; color: string } => {
+      if (f.project_id) {
+        return {
+          id: f.project_id,
+          label: f.project_id,
+          color: projectColorMap.get(f.project_id) ?? '#6B7280',
+        };
+      }
+      const drive = (f as { drive_path?: string | null }).drive_path;
+      if (drive) {
+        const top = drive.split('/').filter(Boolean)[0];
+        if (top) {
+          const key = `drive:${top}`;
+          return { id: key, label: top, color: hashColor(key) };
+        }
+      }
+      const repo = (f as { github_repo?: string | null }).github_repo;
+      if (repo) {
+        const key = `gh:${repo}`;
+        return { id: key, label: repo, color: hashColor(key) };
+      }
+      return { id: 'unassigned', label: 'Unassigned', color: '#4B5563' };
+    };
+
+    const groupInfo = new Map<string, { label: string; color: string }>();
+    const nodes = files.map((f) => {
+      const g = deriveGroup(f);
+      if (!groupInfo.has(g.id)) groupInfo.set(g.id, { label: g.label, color: g.color });
+      return {
+        id: f.id,
+        name: f.file_name,
+        file_type: f.file_type,
+        project_id: f.project_id,
+        color: g.color,
+        group: g.id,
+      };
+    });
+
+    const syntheticGroups = [...groupInfo.entries()]
+      .filter(([id]) => !projectColorMap.has(id) && id !== 'unassigned')
+      .map(([id, info]) => ({ id, name: info.label, color_tag: info.color }));
 
     // Semantic links from DB (only strong ones, ≥ 0.1) — respect user setting
     const semanticLinks = settings.enable_semantic_matching
@@ -114,7 +156,7 @@ router.get('/', authMiddleware, async (c) => {
       data: {
         nodes,
         links: [...semanticLinks, ...nameLinks],
-        projects,
+        projects: [...projects, ...syntheticGroups],
       },
     });
   } catch (err) {

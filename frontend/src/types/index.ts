@@ -36,6 +36,7 @@ export interface DBFile {
   github_repo: string | null;
   github_path: string | null;
   github_sha: string | null;
+  drive_path: string | null;
   project_id: string | null;
   created_at: string;
   updated_at: string;

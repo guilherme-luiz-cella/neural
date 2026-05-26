@@ -113,21 +113,25 @@ const emptyNode = (name: string, path: string): TreeNode => ({
   children: new Map(),
 });
 
+const folderDirs = (file: DBFile): string[] => {
+  // Drive files store the parent folder path directly.
+  // GitHub files store the full path; the trailing segment is the filename.
+  if (file.drive_path) return file.drive_path.split('/').filter(Boolean);
+  const gh = file.github_path;
+  if (!gh) return [];
+  const parts = gh.split('/').filter(Boolean);
+  return parts.slice(0, -1);
+};
+
 const buildTree = (files: DBFile[]): TreeNode => {
   const root = emptyNode('', '');
 
   for (const file of files) {
-    const path = file.github_path;
-    if (!path) {
+    const dirs = folderDirs(file);
+    if (dirs.length === 0) {
       root.files.push(file);
       continue;
     }
-    const parts = path.split('/').filter(Boolean);
-    if (parts.length <= 1) {
-      root.files.push(file);
-      continue;
-    }
-    const dirs = parts.slice(0, -1);
     let node = root;
     let curPath = '';
     for (const dir of dirs) {

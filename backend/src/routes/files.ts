@@ -98,7 +98,7 @@ router.get('/', authMiddleware, async (c) => {
 
     let query = db(c)
       .from('files')
-      .select('id, file_name, file_type, google_drive_id, github_repo, github_path, project_id, created_at, updated_at')
+      .select('id, file_name, file_type, google_drive_id, github_repo, github_path, drive_path, project_id, created_at, updated_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 

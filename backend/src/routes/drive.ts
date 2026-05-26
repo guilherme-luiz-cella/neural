@@ -185,7 +185,17 @@ router.post('/sync', authMiddleware, async (c) => {
     // Validate the current Google account matches the stored account
     await validateUserGoogleAccount(supabase, userId, accessToken);
 
-    const driveFiles = await driveService.listFiles(accessToken);
+    const [driveFiles, driveFolders] = await Promise.all([
+      driveService.listFiles(accessToken),
+      driveService.listFolders(accessToken),
+    ]);
+
+    const folderPathById = driveService.buildFolderPathMap(driveFolders);
+    const drivePath = (f: { parents?: string[] }): string | null => {
+      const parentId = f.parents?.[0];
+      if (!parentId) return null;
+      return folderPathById.get(parentId) ?? null;
+    };
 
     // Fetch existing Drive file IDs for this user
     const { data: existing } = await supabase
@@ -198,11 +208,22 @@ router.post('/sync', authMiddleware, async (c) => {
 
     const toInsert = driveFiles
       .filter((f) => !existingMap.has(f.id))
-      .map((f) => ({ user_id: userId, file_name: f.name, file_type: f.mimeType, google_drive_id: f.id }));
+      .map((f) => ({
+        user_id: userId,
+        file_name: f.name,
+        file_type: f.mimeType,
+        google_drive_id: f.id,
+        drive_path: drivePath(f),
+      }));
 
     const toUpdate = driveFiles
       .filter((f) => existingMap.has(f.id))
-      .map((f) => ({ id: existingMap.get(f.id)!, file_name: f.name, file_type: f.mimeType }));
+      .map((f) => ({
+        id: existingMap.get(f.id)!,
+        file_name: f.name,
+        file_type: f.mimeType,
+        drive_path: drivePath(f),
+      }));
 
     let synced = 0;
     if (toInsert.length > 0) {
@@ -210,7 +231,7 @@ router.post('/sync', authMiddleware, async (c) => {
       synced += data?.length ?? 0;
     }
     for (const u of toUpdate) {
-      await supabase.from('files').update({ file_name: u.file_name, file_type: u.file_type }).eq('id', u.id);
+      await supabase.from('files').update({ file_name: u.file_name, file_type: u.file_type, drive_path: u.drive_path }).eq('id', u.id);
       synced++;
     }
 

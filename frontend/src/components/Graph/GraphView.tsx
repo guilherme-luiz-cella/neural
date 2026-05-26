@@ -318,17 +318,35 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const orbitR = Math.max(360, Math.min(canvas.width, canvas.height) * 0.48);
+
+    // Distinct cluster keys (project ids, drive folders, github repos, etc.)
+    const clusterKeys = new Set<string>();
+    for (const n of nodes) clusterKeys.add(n.group);
+    const clusterList = [...clusterKeys];
+
+    // Cluster centers spread out — radius scales with number of clusters so
+    // they don't overlap visually. Single-cluster case still spreads on a ring
+    // by placing the cluster off-center.
+    const spreadR = Math.max(
+      420,
+      Math.min(canvas.width, canvas.height) * (clusterList.length > 1 ? 0.42 : 0.18)
+    );
     const groupCenters = new Map<string, { x: number; y: number }>();
-    const totalGroups = graphData.projects.length || 1;
-    graphData.projects.forEach((p, i) => {
-      const angle = (i / totalGroups) * Math.PI * 2 - Math.PI / 2;
-      groupCenters.set(p.id, {
-        x: cx + Math.cos(angle) * orbitR,
-        y: cy + Math.sin(angle) * orbitR,
+    clusterList.forEach((key, i) => {
+      const angle = (i / clusterList.length) * Math.PI * 2 - Math.PI / 2;
+      groupCenters.set(key, {
+        x: cx + Math.cos(angle) * spreadR,
+        y: cy + Math.sin(angle) * spreadR,
       });
     });
-    groupCenters.set('unassigned', { x: cx, y: cy });
+
+    // Seed each node near its cluster center with a jitter so the simulation
+    // doesn't start from (0,0) and collapse to the canvas middle.
+    for (const n of nodes) {
+      const c = groupCenters.get(n.group) ?? { x: cx, y: cy };
+      if (n.x == null) n.x = c.x + (Math.random() - 0.5) * 240;
+      if (n.y == null) n.y = c.y + (Math.random() - 0.5) * 240;
+    }
 
     const isCrossCluster = (l: GraphLink) => {
       const s = l.source as GraphNode;
@@ -346,10 +364,10 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           .distance((l) => isCrossCluster(l as GraphLink) ? 420 + (1 - (l as GraphLink).value) * 120 : 60 + (1 - (l as GraphLink).value) * 40)
           .strength((l) => isCrossCluster(l as GraphLink) ? (l as GraphLink).value * 0.04 : (l as GraphLink).value * 0.6)
       )
-      .force('charge', d3Force.forceManyBody().strength(-140).distanceMax(260))
-      .force('collision', d3Force.forceCollide(NODE_RADIUS + 10).strength(0.9).iterations(4))
-      .force('x', d3Force.forceX<GraphNode>((d) => groupCenters.get(d.group)?.x ?? cx).strength(0.22))
-      .force('y', d3Force.forceY<GraphNode>((d) => groupCenters.get(d.group)?.y ?? cy).strength(0.22))
+      .force('charge', d3Force.forceManyBody().strength(-340).distanceMax(360))
+      .force('collision', d3Force.forceCollide(NODE_RADIUS + 18).strength(0.95).iterations(4))
+      .force('x', d3Force.forceX<GraphNode>((d) => groupCenters.get(d.group)?.x ?? cx).strength(0.14))
+      .force('y', d3Force.forceY<GraphNode>((d) => groupCenters.get(d.group)?.y ?? cy).strength(0.14))
       .alphaDecay(0.022)
       .velocityDecay(0.42)
       .on('tick', draw);

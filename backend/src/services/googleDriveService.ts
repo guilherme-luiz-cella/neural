@@ -4,6 +4,13 @@ export interface DriveFile {
   mimeType: string;
   modifiedTime: string;
   size?: string;
+  parents?: string[];
+}
+
+export interface DriveFolder {
+  id: string;
+  name: string;
+  parents?: string[];
 }
 
 interface GoogleTokens {
@@ -89,9 +96,9 @@ export const listFiles = async (accessToken: string): Promise<DriveFile[]> => {
   do {
     const params = new URLSearchParams({
       pageSize: '1000',
-      fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,size)',
+      fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,size,parents)',
       orderBy: 'modifiedTime desc',
-      q: 'trashed=false',
+      q: "trashed=false and mimeType!='application/vnd.google-apps.folder'",
     });
     if (pageToken) params.set('pageToken', pageToken);
 
@@ -105,4 +112,49 @@ export const listFiles = async (accessToken: string): Promise<DriveFile[]> => {
   } while (pageToken);
 
   return allFiles;
+};
+
+export const listFolders = async (accessToken: string): Promise<DriveFolder[]> => {
+  const allFolders: DriveFolder[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const params = new URLSearchParams({
+      pageSize: '1000',
+      fields: 'nextPageToken,files(id,name,parents)',
+      q: "trashed=false and mimeType='application/vnd.google-apps.folder'",
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) throw new Error('Failed to list Drive folders');
+    const data: { files: DriveFolder[]; nextPageToken?: string } = await res.json();
+    allFolders.push(...(data.files ?? []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+
+  return allFolders;
+};
+
+export const buildFolderPathMap = (folders: DriveFolder[]): Map<string, string> => {
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const cache = new Map<string, string>();
+
+  const pathFor = (id: string, seen: Set<string>): string => {
+    if (cache.has(id)) return cache.get(id) as string;
+    if (seen.has(id)) return '';
+    seen.add(id);
+    const folder = byId.get(id);
+    if (!folder) return '';
+    const parentId = folder.parents?.[0];
+    const parentPath = parentId ? pathFor(parentId, seen) : '';
+    const full = parentPath ? `${parentPath}/${folder.name}` : folder.name;
+    cache.set(id, full);
+    return full;
+  };
+
+  for (const f of folders) pathFor(f.id, new Set());
+  return cache;
 };
