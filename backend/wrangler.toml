@@ -10,7 +10,7 @@ GOOGLE_LOGIN_REDIRECT_URI = "http://localhost:8787/api/auth/google/callback"
 GITHUB_REDIRECT_URI = "http://localhost:8787/api/github/callback"
 
 [env.production.vars]
-FRONTEND_URL = "https://neural.cella.website,https://neural-network-3d7.pages.dev"
+FRONTEND_URL = "https://neural.cella.website,https://neural-network-3d7.pages.dev,*.neural-network-3d7.pages.dev,*.cella.website"
 GOOGLE_REDIRECT_URI = "https://api.neural.cella.website/api/drive/callback"
 GOOGLE_LOGIN_REDIRECT_URI = "https://api.neural.cella.website/api/auth/google/callback"
 GITHUB_REDIRECT_URI = "https://api.neural.cella.website/api/github/callback"

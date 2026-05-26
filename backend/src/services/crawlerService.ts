@@ -41,8 +41,8 @@ const EXPORT_MIME: Record<string, string> = {
   'application/x-yaml': '__download__',
 };
 
-const MAX_CONTENT = 30_000;
-const MAX_DOWNLOAD_BYTES = 2_000_000;
+const MAX_CONTENT = 60_000;
+const MAX_DOWNLOAD_BYTES = 8_000_000;
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 500;
 
@@ -116,9 +116,19 @@ const extractReadableStrings = (buffer: ArrayBuffer): string => {
 
 const extractPdfText = (buffer: ArrayBuffer): string => {
   const raw = decodeText(buffer);
-  const textOperators = [...raw.matchAll(/\(([^)]{2,})\)\s*Tj/g)].map((match) => match[1]);
+
+  // PDF text operators: Tj (show), ' (next line + show), " (next line + show with spacing), TJ (array of strings/spacing)
+  const singleStrings = [...raw.matchAll(/\(((?:\\.|[^()\\])*)\)\s*(?:Tj|TJ|'|")/g)].map((m) => m[1]);
+  const arrayStrings  = [...raw.matchAll(/\[((?:\\.|[^\]])+)\]\s*TJ/g)]
+    .flatMap((m) => [...m[1].matchAll(/\(((?:\\.|[^()\\])*)\)/g)].map((s) => s[1]));
+
+  const unescape = (s: string): string =>
+    s.replace(/\\n/g, ' ').replace(/\\r/g, ' ').replace(/\\t/g, ' ').replace(/\\\\/g, '\\').replace(/\\([()])/g, '$1');
+
+  const fromOperators = [...singleStrings, ...arrayStrings].map(unescape).join(' ');
+
   return normalizeExtractedContent([
-    textOperators.join(' '),
+    fromOperators,
     extractReadableStrings(buffer),
   ]) ?? '';
 };
@@ -270,23 +280,78 @@ export const fetchFileContent = async (
   }
 };
 
-// Enhanced keyword extraction with better stemming and filtering
-export const extractKeywords = (content: string): Set<string> => {
-  if (!content || content.length === 0) return new Set();
+const STOP_WORDS = new Set([
+  'that', 'this', 'with', 'from', 'have', 'been', 'were', 'they', 'their', 'about', 'which', 'would', 'could', 'should', 'there', 'these', 'other', 'more', 'into', 'than', 'also', 'after', 'before', 'because', 'while', 'such', 'where', 'when', 'each', 'just', 'over', 'very', 'most', 'some', 'many', 'much', 'thus', 'them',
+  'the', 'and', 'for', 'are', 'you', 'all', 'but', 'can', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'old', 'see', 'she', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'too', 'use', 'any', 'now', 'new', 'his', 'her', 'why', 'not', 'yes', 'off', 'per', 'via', 'yet',
+]);
 
-  // Common stop words
-  const stopWords = new Set([
-    'that', 'this', 'with', 'from', 'have', 'been', 'were', 'they', 'their', 'about', 'which', 'would', 'could', 'should', 'there', 'these', 'other', 'more', 'into', 'than', 'also',
-    'the', 'and', 'for', 'are', 'you', 'all', 'but', 'can', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'old', 'see', 'she', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'too', 'use',
-  ]);
-
-  const words = content
+const tokenize = (content: string): string[] =>
+  content
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length > 3 && !stopWords.has(w));
+    .filter((w) => w.length > 3 && !STOP_WORDS.has(w));
 
-  return new Set(words);
+export const extractTokens = (content: string): string[] => {
+  if (!content) return [];
+  return tokenize(content);
+};
+
+// Bigrams highlight subject phrases (e.g. "machine learning", "climate change")
+export const extractBigrams = (tokens: string[]): string[] => {
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (tokens[i].length >= 4 && tokens[i + 1].length >= 4) {
+      out.push(`${tokens[i]} ${tokens[i + 1]}`);
+    }
+  }
+  return out;
+};
+
+// Backward-compatible: returns a Set of unique tokens (legacy callers).
+export const extractKeywords = (content: string): Set<string> => new Set(tokenize(content));
+
+// TF-IDF: down-weight common tokens, surface document-specific subjects.
+type TermFreq = Map<string, number>;
+
+export const computeTfIdf = (
+  docTokens: Map<string, string[]>,
+): Map<string, Map<string, number>> => {
+  const docCount = docTokens.size;
+  if (docCount === 0) return new Map();
+
+  const docFreq = new Map<string, number>();
+  const termFreqs = new Map<string, TermFreq>();
+
+  for (const [id, tokens] of docTokens) {
+    const tf: TermFreq = new Map();
+    for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
+    termFreqs.set(id, tf);
+    for (const term of tf.keys()) docFreq.set(term, (docFreq.get(term) ?? 0) + 1);
+  }
+
+  const result = new Map<string, Map<string, number>>();
+  for (const [id, tf] of termFreqs) {
+    const scored = new Map<string, number>();
+    const docLen = docTokens.get(id)?.length || 1;
+    for (const [term, count] of tf) {
+      const df = docFreq.get(term) ?? 1;
+      if (df === docCount && docCount > 2) continue; // term appears everywhere → no signal
+      const idf = Math.log((docCount + 1) / (df + 1)) + 1;
+      scored.set(term, (count / docLen) * idf);
+    }
+    result.set(id, scored);
+  }
+  return result;
+};
+
+export const topSubjects = (scored: Map<string, number>, limit = 20): Set<string> => {
+  return new Set(
+    [...scored.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([term]) => term)
+  );
 };
 
 // Name-based similarity (for file names and titles)
@@ -373,9 +438,17 @@ export const buildConnections = (params: BuildConnectionsParams): ConnectionRow[
 
   if (!enableSemantic && !enableName) return [];
 
-  const kwMap = enableSemantic
-    ? new Map(ids.map((id) => [id, extractKeywords(contentMap.get(id) ?? '')]))
-    : new Map<string, Set<string>>();
+  let subjectMap = new Map<string, Set<string>>();
+  if (enableSemantic) {
+    const docTokens = new Map<string, string[]>();
+    for (const id of ids) {
+      const tokens = extractTokens(contentMap.get(id) ?? '');
+      const bigrams = extractBigrams(tokens);
+      docTokens.set(id, [...tokens, ...bigrams]);
+    }
+    const tfidf = computeTfIdf(docTokens);
+    subjectMap = new Map([...tfidf.entries()].map(([id, scored]) => [id, topSubjects(scored, 24)]));
+  }
 
   const toUpsert: ConnectionRow[] = [];
 
@@ -385,7 +458,7 @@ export const buildConnections = (params: BuildConnectionsParams): ConnectionRow[
       const b = ids[j];
 
       const semanticScore = enableSemantic
-        ? computeSimilarity(kwMap.get(a) ?? new Set(), kwMap.get(b) ?? new Set())
+        ? computeSimilarity(subjectMap.get(a) ?? new Set(), subjectMap.get(b) ?? new Set())
         : 0;
 
       const nameScore = enableName
@@ -418,8 +491,12 @@ export const buildConnections = (params: BuildConnectionsParams): ConnectionRow[
 export default {
   fetchFileContent,
   extractKeywords,
+  extractTokens,
+  extractBigrams,
   extractNameTokens,
   computeSimilarity,
   computeNameSimilarity,
+  computeTfIdf,
+  topSubjects,
   buildConnections,
 };

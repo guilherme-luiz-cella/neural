@@ -16,13 +16,32 @@ app.use('*', async (c, next) => {
 });
 
 app.use('*', async (c, next) => {
-  const allowed = (c.env.FRONTEND_URL || '*')
+  const raw = (c.env.FRONTEND_URL || '*')
     .split(',')
-    .map((o) => o.trim());
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  const exact = new Set(raw.filter((o) => !o.startsWith('*.')));
+  const suffixes = raw
+    .filter((o) => o.startsWith('*.'))
+    .map((o) => o.slice(1));
+
+  const isAllowedOrigin = (origin: string): boolean => {
+    if (exact.has(origin)) return true;
+    try {
+      const host = new URL(origin).hostname;
+      return suffixes.some((suffix) => host === suffix.slice(1) || host.endsWith(suffix));
+    } catch {
+      return false;
+    }
+  };
+
+  const fallback = raw[0] ?? '*';
 
   return cors({
-    origin: allowed.length === 1 && allowed[0] === '*' ? '*' : (origin) =>
-      allowed.includes(origin) ? origin : allowed[0],
+    origin: raw.length === 1 && raw[0] === '*'
+      ? '*'
+      : (origin) => (origin && isAllowedOrigin(origin) ? origin : fallback),
     credentials: true,
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],

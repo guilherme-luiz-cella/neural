@@ -51,11 +51,14 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const [crawlMsg, setCrawlMsg] = useState('');
   const [showClusterLabels, setShowClusterLabels] = useState(true);
   const [showLinks, setShowLinks] = useState(true);
+  const [showNameLinks, setShowNameLinks] = useState(false);
   const [linkStrengthFilter, setLinkStrengthFilter] = useState(0.2);
   const showLinksRef = useRef(true);
+  const showNameLinksRef = useRef(false);
   const linkFilterRef = useRef(0.2);
 
   useEffect(() => { showLinksRef.current = showLinks; }, [showLinks]);
+  useEffect(() => { showNameLinksRef.current = showNameLinks; }, [showNameLinks]);
   useEffect(() => { linkFilterRef.current = linkStrengthFilter; }, [linkStrengthFilter]);
 
   const fetchGraph = useCallback(async () => {
@@ -211,6 +214,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         const s = link.source as GraphNode;
         const tgt = link.target as GraphNode;
         if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
+        if (link.type === 'name' && !showNameLinksRef.current) continue;
 
         const strength = link.value ?? 0.1;
         if (strength < minStrength) continue;
@@ -314,7 +318,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const orbitR = Math.max(240, Math.min(canvas.width, canvas.height) * 0.32);
+    const orbitR = Math.max(360, Math.min(canvas.width, canvas.height) * 0.48);
     const groupCenters = new Map<string, { x: number; y: number }>();
     const totalGroups = graphData.projects.length || 1;
     graphData.projects.forEach((p, i) => {
@@ -339,13 +343,13 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         d3Force
           .forceLink<GraphNode, GraphLink>(links)
           .id((d) => d.id)
-          .distance((l) => isCrossCluster(l as GraphLink) ? 280 + (1 - (l as GraphLink).value) * 100 : 100 + (1 - (l as GraphLink).value) * 70)
-          .strength((l) => isCrossCluster(l as GraphLink) ? (l as GraphLink).value * 0.12 : (l as GraphLink).value * 0.45)
+          .distance((l) => isCrossCluster(l as GraphLink) ? 420 + (1 - (l as GraphLink).value) * 120 : 60 + (1 - (l as GraphLink).value) * 40)
+          .strength((l) => isCrossCluster(l as GraphLink) ? (l as GraphLink).value * 0.04 : (l as GraphLink).value * 0.6)
       )
-      .force('charge', d3Force.forceManyBody().strength(-280).distanceMax(420))
-      .force('collision', d3Force.forceCollide(NODE_RADIUS + 22).strength(0.8).iterations(4))
-      .force('x', d3Force.forceX<GraphNode>((d) => groupCenters.get(d.group)?.x ?? cx).strength(0.09))
-      .force('y', d3Force.forceY<GraphNode>((d) => groupCenters.get(d.group)?.y ?? cy).strength(0.09))
+      .force('charge', d3Force.forceManyBody().strength(-140).distanceMax(260))
+      .force('collision', d3Force.forceCollide(NODE_RADIUS + 10).strength(0.9).iterations(4))
+      .force('x', d3Force.forceX<GraphNode>((d) => groupCenters.get(d.group)?.x ?? cx).strength(0.22))
+      .force('y', d3Force.forceY<GraphNode>((d) => groupCenters.get(d.group)?.y ?? cy).strength(0.22))
       .alphaDecay(0.022)
       .velocityDecay(0.42)
       .on('tick', draw);
@@ -473,6 +477,15 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
               className="w-4 h-4 rounded border-gray-600 bg-gray-800 cursor-pointer"
             />
             Show links
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:text-gray-400">
+            <input
+              type="checkbox"
+              checked={showNameLinks}
+              onChange={(e) => { setShowNameLinks(e.target.checked); requestAnimationFrame(draw); }}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-800 cursor-pointer"
+            />
+            Name match
           </label>
           <label className="flex items-center gap-2 text-xs text-gray-600">
             Min link strength
