@@ -23,7 +23,8 @@ export const getAuthUrl = (clientId: string, redirectUri: string, state: string)
       'https://www.googleapis.com/auth/drive.metadata.readonly',
     ].join(' '),
     access_type: 'offline',
-    prompt: 'consent',
+    prompt: 'select_account consent',
+    include_granted_scopes: 'false',
     state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;

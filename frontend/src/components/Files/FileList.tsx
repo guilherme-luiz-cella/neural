@@ -3,23 +3,23 @@ import { DBFile } from '../../types';
 import { api } from '../../utils/api';
 import { AxiosError } from 'axios';
 
-const MIME_ICON: Record<string, string> = {
-  'application/vnd.google-apps.document': '📄',
-  'application/vnd.google-apps.spreadsheet': '📊',
-  'application/vnd.google-apps.presentation': '📑',
-  'application/pdf': '📕',
-  'text/plain': '📝',
-  'image/': '🖼',
-  'video/': '🎬',
-  'audio/': '🎵',
+const MIME_LABEL: Record<string, string> = {
+  'application/vnd.google-apps.document': 'DOC',
+  'application/vnd.google-apps.spreadsheet': 'XLS',
+  'application/vnd.google-apps.presentation': 'PPT',
+  'application/pdf': 'PDF',
+  'text/plain': 'TXT',
+  'image/': 'IMG',
+  'video/': 'VID',
+  'audio/': 'AUD',
 };
 
 const fileIcon = (mimeType: string | null) => {
-  if (!mimeType) return '📁';
-  for (const [key, icon] of Object.entries(MIME_ICON)) {
-    if (mimeType.startsWith(key)) return icon;
+  if (!mimeType) return 'FILE';
+  for (const [key, label] of Object.entries(MIME_LABEL)) {
+    if (mimeType.startsWith(key)) return label;
   }
-  return '📁';
+  return 'FILE';
 };
 
 const fmt = (iso: string) =>
@@ -80,7 +80,7 @@ export const FileList = ({ files, onSynced, onFileClick }: Props) => {
               className="flex items-center gap-3 py-3 hover:bg-gray-900/50 px-2 rounded-lg transition-colors cursor-pointer"
               onClick={() => onFileClick?.(file.id, file.file_name)}
             >
-              <span className="text-xl">{fileIcon(file.file_type)}</span>
+              <span className="text-[10px] font-semibold text-gray-500 w-9 shrink-0">{fileIcon(file.file_type)}</span>
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-white truncate">{file.file_name}</p>
                 <p className="text-xs text-gray-500">{file.file_type ?? 'Unknown type'}</p>

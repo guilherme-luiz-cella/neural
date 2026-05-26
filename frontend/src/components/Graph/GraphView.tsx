@@ -50,6 +50,13 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const [crawling, setCrawling] = useState(false);
   const [crawlMsg, setCrawlMsg] = useState('');
   const [showClusterLabels, setShowClusterLabels] = useState(true);
+  const [showLinks, setShowLinks] = useState(true);
+  const [linkStrengthFilter, setLinkStrengthFilter] = useState(0.2);
+  const showLinksRef = useRef(true);
+  const linkFilterRef = useRef(0.2);
+
+  useEffect(() => { showLinksRef.current = showLinks; }, [showLinks]);
+  useEffect(() => { linkFilterRef.current = linkStrengthFilter; }, [linkStrengthFilter]);
 
   const fetchGraph = useCallback(async () => {
     setLoading(true);
@@ -193,21 +200,42 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       }
     }
 
-    for (const link of linksRef.current) {
-      const s = link.source as GraphNode;
-      const tgt = link.target as GraphNode;
-      if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
+    if (showLinksRef.current) {
+      const hoveredId = hoveredRef.current;
+      const minStrength = linkFilterRef.current;
+      const baseAlpha = isClustered ? 0.08 : 0.14;
+      const dimAlpha = 0.04;
+      const hotAlpha = 0.95;
 
-      const strength = link.value ?? 0.1;
-      const alpha = Math.min(isClustered ? 0.7 : 0.9, strength * (isClustered ? 1.2 : 1.6));
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(tgt.x, tgt.y);
-      ctx.strokeStyle = link.type === 'name'
-        ? `rgba(251,191,36,${alpha})`
-        : `rgba(99,102,241,${alpha})`;
-      ctx.lineWidth = Math.max(0.5, strength * (isClustered ? 2.2 : 2.8));
-      ctx.stroke();
+      for (const link of linksRef.current) {
+        const s = link.source as GraphNode;
+        const tgt = link.target as GraphNode;
+        if (s.x == null || s.y == null || tgt.x == null || tgt.y == null) continue;
+
+        const strength = link.value ?? 0.1;
+        if (strength < minStrength) continue;
+
+        const incident = hoveredId != null && (s.id === hoveredId || tgt.id === hoveredId);
+        let alpha: number;
+        if (hoveredId == null) {
+          alpha = Math.min(baseAlpha + strength * 0.25, 0.4);
+        } else if (incident) {
+          alpha = hotAlpha;
+        } else {
+          alpha = dimAlpha;
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(tgt.x, tgt.y);
+        ctx.strokeStyle = link.type === 'name'
+          ? `rgba(251,191,36,${alpha})`
+          : `rgba(99,102,241,${alpha})`;
+        ctx.lineWidth = incident
+          ? Math.max(1.2, strength * 2.6)
+          : Math.max(0.35, strength * 1.1);
+        ctx.stroke();
+      }
     }
 
     for (const node of nodesRef.current) {
@@ -251,9 +279,9 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           ctx.fillStyle = 'rgba(156,163,175,0.6)';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'top';
-          const typeLabel = node.file_type.includes('spreadsheet') ? '📊' : 
-                           node.file_type.includes('document') ? '📄' :
-                           node.file_type.includes('presentation') ? '📑' : '📁';
+          const typeLabel = node.file_type.includes('spreadsheet') ? 'XLS' :
+                           node.file_type.includes('document') ? 'DOC' :
+                           node.file_type.includes('presentation') ? 'PPT' : 'FILE';
           ctx.fillText(typeLabel, node.x, node.y + r + 2);
         }
       }
@@ -427,7 +455,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
             Unassigned
           </div>
         )}
-        <div className="flex items-center gap-3 ml-auto">
+        <div className="flex items-center gap-3 ml-auto flex-wrap">
           <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:text-gray-400">
             <input
               type="checkbox"
@@ -436,6 +464,28 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
               className="w-4 h-4 rounded border-gray-600 bg-gray-800 cursor-pointer"
             />
             Show cluster composition
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer hover:text-gray-400">
+            <input
+              type="checkbox"
+              checked={showLinks}
+              onChange={(e) => { setShowLinks(e.target.checked); requestAnimationFrame(draw); }}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-800 cursor-pointer"
+            />
+            Show links
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            Min link strength
+            <input
+              type="range"
+              min={0}
+              max={0.9}
+              step={0.05}
+              value={linkStrengthFilter}
+              onChange={(e) => { setLinkStrengthFilter(parseFloat(e.target.value)); requestAnimationFrame(draw); }}
+              className="w-24 accent-indigo-500"
+            />
+            <span className="w-8 text-right tabular-nums">{linkStrengthFilter.toFixed(2)}</span>
           </label>
           <div className="flex items-center gap-1.5 text-xs text-gray-600">
             <div className="w-4 h-0.5 bg-yellow-400/70 rounded" />

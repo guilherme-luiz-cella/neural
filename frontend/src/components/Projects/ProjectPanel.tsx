@@ -162,7 +162,7 @@ export const ProjectPanel = ({ projects, files, onChanged }: Props) => {
                 className="text-gray-600 hover:text-red-400 transition-colors text-xs px-1"
                 title="Delete project"
               >
-                ✕
+                ×
               </button>
             </div>
           ))}

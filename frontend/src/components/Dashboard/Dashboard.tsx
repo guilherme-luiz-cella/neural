@@ -322,7 +322,6 @@ export const Dashboard = () => {
                     </Suspense>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full text-gray-700 text-sm gap-2">
-                      <p className="text-4xl">📁</p>
                       <p>Open a file from the explorer</p>
                       <p className="text-xs text-gray-600">or click <strong className="text-gray-500">+ New file</strong> to create one</p>
                     </div>

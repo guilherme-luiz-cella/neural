@@ -75,7 +75,6 @@ export const MediaViewer = ({ fileId, fileName, fileType }: Props) => {
         )}
         {isAudio && (
           <div className="flex flex-col items-center gap-4">
-            <div className="text-6xl">🎵</div>
             <p className="text-gray-400 text-sm">{fileName}</p>
             <audio src={url} controls className="w-80" />
           </div>
