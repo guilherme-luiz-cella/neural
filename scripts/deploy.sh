@@ -1,40 +1,35 @@
 #!/usr/bin/env bash
 # Deploys everything for the neural-network project.
 #
-# Default: deploy both Workers (backend + backend-crawler) to production and
-# push to neural/main so Cloudflare Pages rebuilds the frontend.
+# Stack:
+#   - CF Worker: backend (API gateway)
+#   - Supabase Edge Function: crawl-batch, search (auto-deployed via MCP /
+#     supabase CLI, not via this script)
+#   - Cloudflare Pages: frontend (auto-builds on git push)
 #
 # Usage:
-#   bash scripts/deploy.sh                  # full deploy (workers + git push)
-#   bash scripts/deploy.sh --skip-push      # workers only, no git
-#   bash scripts/deploy.sh --skip-crawler   # main backend only
-#   bash scripts/deploy.sh --skip-backend   # crawler only
-#   bash scripts/deploy.sh --secrets        # push secrets from backend/.env to both workers
+#   bash scripts/deploy.sh                  # backend deploy + git push
+#   bash scripts/deploy.sh --skip-push      # backend only, no git
+#   bash scripts/deploy.sh --secrets        # push secrets from backend/.env to backend worker
 #   bash scripts/deploy.sh --dry-run        # bundle but don't upload
 #
 # Prereqs:
 #   - wrangler authenticated  (npx wrangler whoami)
-#   - backend/.env contains real SUPABASE_URL, SUPABASE_SERVICE_KEY,
-#     JWT_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (when using --secrets)
+#   - backend/.env contains real secrets (when using --secrets)
 #   - git push permission to neural/main
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND="$ROOT/backend"
-CRAWLER="$ROOT/backend-crawler"
 ENV_FILE="$BACKEND/.env"
 
-SKIP_BACKEND=0
-SKIP_CRAWLER=0
 SKIP_PUSH=0
 DRY_RUN=0
 DO_SECRETS=0
 
 for arg in "$@"; do
   case "$arg" in
-    --skip-backend) SKIP_BACKEND=1 ;;
-    --skip-crawler) SKIP_CRAWLER=1 ;;
     --skip-push)    SKIP_PUSH=1 ;;
     --dry-run)      DRY_RUN=1 ;;
     --secrets)      DO_SECRETS=1 ;;
@@ -48,13 +43,11 @@ ok()  { printf "    \033[1;32m✓\033[0m %s\n" "$*"; }
 warn(){ printf "    \033[1;33m!\033[0m %s\n" "$*"; }
 
 push_secrets() {
-  local target_dir="$1"
-  local target_name="$2"
   if [[ ! -f "$ENV_FILE" ]]; then
-    warn "$ENV_FILE not found — skipping secrets for $target_name"
+    warn "$ENV_FILE not found — skipping secrets"
     return
   fi
-  log "push secrets → $target_name"
+  log "push secrets → neural-network-backend"
   for k in SUPABASE_URL SUPABASE_SERVICE_KEY JWT_SECRET GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
     local value
     value="$(grep "^$k=" "$ENV_FILE" | head -1 | cut -d= -f2-)"
@@ -62,40 +55,34 @@ push_secrets() {
       warn "skip $k (empty or placeholder in .env)"
       continue
     fi
-    (cd "$target_dir" && printf "%s" "$value" | npx wrangler secret put "$k" --env production >/dev/null 2>&1)
+    (cd "$BACKEND" && printf "%s" "$value" | npx wrangler secret put "$k" --env production >/dev/null 2>&1)
     ok "$k"
   done
 }
 
-deploy_worker() {
-  local dir="$1"
-  local name="$2"
-  log "deploy $name"
-  cd "$dir"
+deploy_backend() {
+  log "deploy neural-network-backend"
+  cd "$BACKEND"
   if [[ $DRY_RUN -eq 1 ]]; then
     npx wrangler deploy --env production --dry-run --outdir ".dryrun" 2>&1 | tail -5
     rm -rf ".dryrun"
   else
     npx wrangler deploy --env production 2>&1 | tail -6
   fi
-  ok "$name deployed"
+  ok "backend deployed"
   cd - >/dev/null
 }
 
 log "preflight"
-if ! npx --prefix "$BACKEND" wrangler whoami >/dev/null 2>&1; then
+if ! (cd "$BACKEND" && npx wrangler whoami >/dev/null 2>&1); then
   echo "wrangler not authenticated. run: npx wrangler login" >&2
   exit 1
 fi
 ok "wrangler authenticated"
 
-if [[ $DO_SECRETS -eq 1 ]]; then
-  [[ $SKIP_BACKEND -eq 0 ]] && push_secrets "$BACKEND" "neural-network-backend"
-  [[ $SKIP_CRAWLER -eq 0 ]] && push_secrets "$CRAWLER" "neural-network-crawler"
-fi
+[[ $DO_SECRETS -eq 1 ]] && push_secrets
 
-[[ $SKIP_BACKEND -eq 0 ]] && deploy_worker "$BACKEND" "neural-network-backend"
-[[ $SKIP_CRAWLER -eq 0 ]] && deploy_worker "$CRAWLER" "neural-network-crawler"
+deploy_backend
 
 if [[ $SKIP_PUSH -eq 0 && $DRY_RUN -eq 0 ]]; then
   log "git push (triggers Pages build)"
