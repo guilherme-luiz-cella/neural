@@ -4,6 +4,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { ConnectDrive } from '../Drive/ConnectDrive';
 import { DriveAccountChip } from '../Drive/DriveAccountChip';
 import { FileExplorer } from '../Explorer/FileExplorer';
+import { SearchBar } from '../Search/SearchBar';
 import { GitHubPanel } from '../GitHub/GitHubPanel';
 import { api } from '../../utils/api';
 import { DBFile, Project } from '../../types';
@@ -226,6 +227,14 @@ export const Dashboard = () => {
           {banner && <span className="text-xs text-blue-400">{banner}</span>}
         </div>
         <div className="flex items-center gap-3">
+          {driveConnected && (
+            <SearchBar
+              onSelect={(fileId) => {
+                const file = files.find((f) => f.id === fileId);
+                if (file) handleFileOpen(file);
+              }}
+            />
+          )}
           {githubConnected && (
             <button
               onClick={() => setShowGithubPanel(true)}

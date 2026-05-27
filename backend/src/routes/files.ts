@@ -90,6 +90,32 @@ const onError = (err: unknown, c: Parameters<Parameters<typeof router.get>[1]>[0
   return c.json({ success: false, message: 'Internal server error' }, 500);
 };
 
+// GET /api/files/search?q=...&limit=12 — proxies to the Supabase Edge
+// Function `search` which embeds the query and runs pgvector kNN against
+// THIS user's file_embeddings.
+router.get('/search', authMiddleware, async (c) => {
+  try {
+    const { userId } = c.get('user');
+    const q = c.req.query('q')?.trim();
+    if (!q) return c.json({ success: false, message: 'q is required' }, 400);
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') ?? '12', 10) || 12, 1), 50);
+    const threshold = parseFloat(c.req.query('threshold') ?? '0.35') || 0.35;
+
+    const res = await fetch(`${c.env.SUPABASE_URL}/functions/v1/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, query: q, limit, threshold }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('[Files:search] edge function error', res.status, text);
+      return c.json({ success: false, message: 'Search failed' }, 500);
+    }
+    const json = await res.json() as { results: unknown[] };
+    return c.json({ success: true, data: { results: json.results } });
+  } catch (err) { return onError(err, c); }
+});
+
 // GET /api/files
 router.get('/', authMiddleware, async (c) => {
   try {
