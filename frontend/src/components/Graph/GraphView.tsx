@@ -660,44 +660,43 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
   const handleCrawl = async () => {
     setCrawling(true);
-    setCrawlMsg('Crawling…');
+    setCrawlMsg('Starting crawl…');
+    const usingSoloWorker = !!import.meta.env.VITE_CRAWLER_URL;
+    const client = usingSoloWorker ? crawlerApi : api;
+    const runPath = usingSoloWorker ? '/run-all' : '/crawler/run';
+    const statusPath = usingSoloWorker ? '/status' : '/crawler/run';
+
     try {
-      // Solo crawler worker exposes /run-all (server loops + waitUntil). Falls
-      // back to /crawler/run loop when frontend points at the main API.
-      const usingSoloWorker = !!import.meta.env.VITE_CRAWLER_URL;
-      if (usingSoloWorker) {
-        let totalCrawled = 0;
-        let rounds = 0;
-        while (rounds < 40) {
-          const res = await crawlerApi.post('/run-all');
-          const data = res.data?.data ?? {};
-          totalCrawled += data.crawled ?? 0;
+      // Kick a job. crawler worker upserts a crawler_jobs row so the cron
+      // (every 1 min) keeps draining this user's queue after we stop polling.
+      const kick = await client.post(runPath);
+      const kd = kick.data?.data ?? {};
+      setCrawlMsg(
+        kd.done
+          ? kick.data.message
+          : `Crawling… ${kd.indexed ?? 0} indexed · ${kd.remaining ?? 0} pending`,
+      );
+
+      // Poll status. Stop when remaining=0 OR after 5 min (cron continues).
+      const t0 = Date.now();
+      while (Date.now() - t0 < 5 * 60 * 1000) {
+        await new Promise((r) => setTimeout(r, 4000));
+        try {
+          const sRes = usingSoloWorker
+            ? await client.get(statusPath)
+            : await client.post(statusPath);
+          const s = sRes.data?.data ?? {};
+          const indexed = s.indexed ?? 0;
+          const remaining = s.remaining ?? 0;
           setCrawlMsg(
-            data.done
-              ? res.data.message
-              : `Crawling… ${totalCrawled} done · ${data.remaining ?? 0} pending`
-          );
-          if (data.done) break;
-          // Worker took first batch + kicked background; poll again after a beat.
-          await new Promise((r) => setTimeout(r, 3000));
-          rounds++;
-        }
-      } else {
-        let totalCrawled = 0;
-        let rounds = 0;
-        const maxRounds = 60;
-        while (rounds < maxRounds) {
-          const res = await api.post('/crawler/run');
-          const data = res.data?.data ?? {};
-          totalCrawled += data.crawled ?? 0;
-          const remaining = data.remaining ?? 0;
-          setCrawlMsg(
-            remaining > 0
-              ? `Crawling… ${totalCrawled} done · ${remaining} pending`
-              : res.data.message
+            remaining === 0
+              ? `Done · ${indexed} indexed`
+              : `Crawling… ${indexed} indexed · ${remaining} pending (cron keeps running)`,
           );
           if (remaining === 0) break;
-          rounds++;
+          fetchGraph();
+        } catch {
+          break;
         }
       }
       fetchGraph();

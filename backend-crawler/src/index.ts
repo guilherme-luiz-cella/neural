@@ -111,6 +111,58 @@ const crawlOneBatch = (supabase: SupabaseClient, env: Env, userId: string): Prom
     ),
   });
 
+// Opt-in queue: a user only gets crawled when they have an active job row.
+// Frontend's Crawl button inserts one. Cron sweeps these only — never
+// touches users who didn't ask to be crawled.
+const upsertCrawlerJob = async (supabase: SupabaseClient, userId: string): Promise<void> => {
+  // Reuse the latest non-completed job, or create a new one.
+  const { data: existing } = await supabase
+    .from('crawler_jobs')
+    .select('id, status')
+    .eq('user_id', userId)
+    .in('status', ['queued', 'running'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    await supabase.from('crawler_jobs').update({ status: 'running' }).eq('id', existing.id);
+    return;
+  }
+  await supabase.from('crawler_jobs').insert({
+    user_id: userId,
+    status: 'running',
+    total_files: 0,
+    processed_files: 0,
+  });
+};
+
+const advanceJob = async (
+  supabase: SupabaseClient,
+  userId: string,
+  delta: number,
+  done: boolean,
+): Promise<void> => {
+  const { data: job } = await supabase
+    .from('crawler_jobs')
+    .select('id, processed_files, total_files')
+    .eq('user_id', userId)
+    .in('status', ['queued', 'running'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!job) return;
+
+  const patch: Record<string, unknown> = {
+    processed_files: (job.processed_files ?? 0) + delta,
+  };
+  if (done) {
+    patch.status = 'completed';
+    patch.completed_at = new Date().toISOString();
+  }
+  await supabase.from('crawler_jobs').update(patch).eq('id', job.id);
+};
+
 app.get('/health', (c) => c.json({ success: true, message: 'Crawler worker running' }));
 
 // Single batch — same response shape as legacy /api/crawler/run
@@ -140,7 +192,10 @@ app.post('/run-all', authMiddleware, async (c) => {
   const { userId } = c.get('user');
   const supabase = db(c.env);
 
-  // Run first batch synchronously to surface DRIVE_NOT_CONNECTED early.
+  // Opt-in: insert/refresh a job row so cron will keep working through this
+  // user's pending files even after the request ends.
+  await upsertCrawlerJob(supabase, userId);
+
   let first: CrawlResult;
   try {
     first = await crawlOneBatch(supabase, c.env, userId);
@@ -152,17 +207,18 @@ app.post('/run-all', authMiddleware, async (c) => {
     return c.json({ success: false, message: 'Crawler failed' }, 500);
   }
 
+  await advanceJob(supabase, userId, first.crawled, first.remaining === 0);
+
   if (first.remaining === 0) {
     return c.json({ success: true, message: 'Crawl complete', data: { ...first, done: true } });
   }
 
-  // Continue in background. ctx.waitUntil holds the worker alive until promise
-  // resolves OR CPU budget is hit. Cron picks up leftovers.
   c.executionCtx.waitUntil((async () => {
-    let safety = 60; // hard cap: 60 batches * 40 = 2400 files per request
+    let safety = 60;
     while (safety-- > 0) {
       try {
         const r = await crawlOneBatch(supabase, c.env, userId);
+        await advanceJob(supabase, userId, r.crawled, r.remaining === 0);
         if (r.remaining === 0) break;
       } catch (err) {
         console.error('[Crawler:/run-all bg]', err);
@@ -178,24 +234,87 @@ app.post('/run-all', authMiddleware, async (c) => {
   });
 });
 
+// GET /status — frontend polls this to show progress for the active user.
+app.get('/status', authMiddleware, async (c) => {
+  const { userId } = c.get('user');
+  const supabase = db(c.env);
+
+  const [{ data: job }, { count: pending }, { count: indexed }] = await Promise.all([
+    supabase.from('crawler_jobs')
+      .select('id, status, total_files, processed_files, created_at, completed_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase.from('files')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .is('content', null)
+      .not('google_drive_id', 'is', null)
+      .not('file_type', 'is', null),
+    supabase.from('files')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .not('content', 'is', null),
+  ]);
+
+  return c.json({
+    success: true,
+    data: {
+      job,
+      indexed: indexed ?? 0,
+      remaining: pending ?? 0,
+      done: (pending ?? 0) === 0,
+    },
+  });
+});
+
+// POST /cancel — user stops their crawl. Marks job completed, cron drops them.
+app.post('/cancel', authMiddleware, async (c) => {
+  const { userId } = c.get('user');
+  const supabase = db(c.env);
+  await supabase
+    .from('crawler_jobs')
+    .update({ status: 'cancelled', completed_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .in('status', ['queued', 'running']);
+  return c.json({ success: true, message: 'Crawl cancelled' });
+});
+
 app.notFound((c) => c.json({ success: false, message: 'Route not found' }, 404));
 
-// Cron handler — sweep all users with pending content, one batch each.
+// Cron handler — sweep only users with an active crawler_jobs row. This
+// prevents the crawler from auto-running for users who haven't opted in by
+// clicking the Crawl button.
 const scheduled: ExportedHandlerScheduledHandler<Env> = async (_event, env, ctx) => {
   ctx.waitUntil((async () => {
     const supabase = db(env);
-    const { data: pending } = await supabase
-      .from('files')
+    const { data: jobs } = await supabase
+      .from('crawler_jobs')
       .select('user_id')
-      .is('content', null)
-      .not('google_drive_id', 'is', null)
-      .not('file_type', 'is', null);
+      .in('status', ['queued', 'running']);
 
-    const userIds = [...new Set((pending ?? []).map((r: { user_id: string }) => r.user_id))];
+    const userIds = [...new Set((jobs ?? []).map((r: { user_id: string }) => r.user_id))];
+    if (userIds.length === 0) {
+      console.log('[Crawler:cron] no active jobs');
+      return;
+    }
+
     for (const userId of userIds) {
       try {
-        await crawlOneBatch(supabase, env, userId);
+        const r = await crawlOneBatch(supabase, env, userId);
+        await advanceJob(supabase, userId, r.crawled, r.remaining === 0);
+        console.log(`[Crawler:cron] user=${userId.slice(0, 8)} crawled=${r.crawled} conns=${r.connections} remaining=${r.remaining}`);
       } catch (err) {
+        if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
+          // Drive disconnected — kill the job so we stop pestering them.
+          await supabase
+            .from('crawler_jobs')
+            .update({ status: 'cancelled', error_message: 'DRIVE_NOT_CONNECTED', completed_at: new Date().toISOString() })
+            .eq('user_id', userId)
+            .in('status', ['queued', 'running']);
+          continue;
+        }
         console.error('[Crawler:cron]', userId, err);
       }
     }

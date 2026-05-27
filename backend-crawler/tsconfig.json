@@ -9,5 +9,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "../backend/src/services/crawlerService.ts", "../backend/src/services/googleDriveService.ts", "../backend/src/services/jwtService.ts", "../backend/src/routes/driveHelpers.ts", "../backend/src/types/index.ts"]
+  "include": ["src/index.ts", "../backend/src/services/crawlerService.ts", "../backend/src/services/googleDriveService.ts", "../backend/src/services/jwtService.ts", "../backend/src/routes/driveHelpers.ts", "../backend/src/types/index.ts"],
+  "exclude": ["src/cli.ts"]
 }
