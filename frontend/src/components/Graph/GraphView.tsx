@@ -701,7 +701,7 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           // Keep last 6 samples (~24s window) for rate calc.
           while (samples.length > 6) samples.shift();
 
-          let etaText = '';
+          let etaText = ' · ETA calculating…';
           if (samples.length >= 2 && remaining > 0) {
             const first = samples[0];
             const last = samples[samples.length - 1];
@@ -710,10 +710,9 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
             if (dtSec > 0 && dIdx > 0) {
               const ratePerSec = dIdx / dtSec;
               etaText = ` · ETA ${formatEta(remaining / ratePerSec)}`;
-            } else if (dIdx === 0) {
-              etaText = ' · ETA calculating…';
             }
           }
+          if (remaining === 0) etaText = '';
 
           setCrawlMsg(
             remaining === 0
