@@ -260,6 +260,14 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
 
   useEffect(() => { fetchGraph(); }, [fetchGraph, crawlTrigger]);
 
+  // Auto-refresh every 60s — cron + threshold rebuild produce new
+  // connections in the background, this keeps the canvas in sync without
+  // requiring a manual reload.
+  useEffect(() => {
+    const id = window.setInterval(() => { fetchGraph(); }, 60_000);
+    return () => window.clearInterval(id);
+  }, [fetchGraph]);
+
   const getClusterCentroids = () => {
     const map = new Map<string, { cx: number; cy: number; count: number; color: string; name: string; files: { id: string; name: string }[] }>();
 
