@@ -14,26 +14,50 @@ router.get('/', authMiddleware, async (c) => {
     const { userId } = c.get('user');
     const supabase = db(c);
 
-    const [filesRes, projectsRes, settingsRes] = await Promise.all([
-      supabase.from('files').select('id, file_name, file_type, project_id, drive_path, github_repo').eq('user_id', userId),
-      supabase.from('projects').select('id, name, color_tag').eq('user_id', userId),
-      supabase.from('user_settings').select('enable_semantic_matching').eq('user_id', userId).single(),
+    // Paginate over Supabase's 1000-row implicit cap so users with >1000
+    // files (or >1000 connections) get the full graph, not a truncated one.
+    const fetchAll = async <T>(
+      query: (from: number, to: number) => PromiseLike<{ data: T[] | null }>,
+      pageSize = 1000,
+    ): Promise<T[]> => {
+      const out: T[] = [];
+      for (let from = 0; ; from += pageSize) {
+        const { data } = await query(from, from + pageSize - 1);
+        if (!data || data.length === 0) break;
+        out.push(...data);
+        if (data.length < pageSize) break;
+      }
+      return out;
+    };
+
+    const [files, projects, settingsRes] = await Promise.all([
+      fetchAll<{ id: string; file_name: string; file_type: string | null; project_id: string | null; drive_path: string | null; github_repo: string | null }>((from, to) =>
+        supabase.from('files')
+          .select('id, file_name, file_type, project_id, drive_path, github_repo')
+          .eq('user_id', userId)
+          .range(from, to)
+      ),
+      fetchAll<{ id: string; name: string; color_tag: string | null }>((from, to) =>
+        supabase.from('projects')
+          .select('id, name, color_tag')
+          .eq('user_id', userId)
+          .range(from, to)
+      ),
+      supabase.from('user_settings').select('enable_semantic_matching').eq('user_id', userId).maybeSingle(),
     ]);
 
-    const files = filesRes.data ?? [];
-    const projects = projectsRes.data ?? [];
     const settings = settingsRes.data ?? { enable_semantic_matching: true };
-
     const fileIds = files.map((f) => f.id);
 
-    const connectionsRes = fileIds.length
-      ? await supabase
-          .from('connections')
-          .select('file_1_id, file_2_id, similarity_score, connection_type')
-          .in('file_1_id', fileIds)
-      : { data: [] };
+    const dbConnections = fileIds.length
+      ? await fetchAll<{ file_1_id: string; file_2_id: string; similarity_score: number | null; connection_type: string }>((from, to) =>
+          supabase.from('connections')
+            .select('file_1_id, file_2_id, similarity_score, connection_type')
+            .in('file_1_id', fileIds)
+            .range(from, to)
+        )
+      : [];
 
-    const dbConnections = connectionsRes.data ?? [];
     const fileIdSet = new Set(fileIds);
 
     // Build node list. Cluster files first by project, then by Drive top-level
