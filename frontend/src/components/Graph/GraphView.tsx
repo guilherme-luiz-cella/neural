@@ -236,7 +236,6 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const [showLinks, setShowLinks] = useState(true);
   const [linkStrengthFilter, setLinkStrengthFilter] = useState(0.05);
   const [clusterModes, setClusterModes] = useState<Set<ClusterMode>>(() => new Set(['folder']));
-  const [clusterMenuOpen, setClusterMenuOpen] = useState(false);
   const [activeLineKinds, setActiveLineKinds] = useState<Set<LineKind>>(() => new Set(['semantic']));
   const [lineMenuOpen, setLineMenuOpen] = useState(false);
   const showLinksRef = useRef(true);
@@ -346,25 +345,25 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.lineWidth = 3 / zoom;
         ctx.stroke();
 
-        // Cluster name — truncate to keep within bubble, cap font so labels
-        // don't blow up to canvas-spanning sizes at very low zoom.
-        const truncName = cluster.name.length > 22 ? cluster.name.slice(0, 21) + '…' : cluster.name;
-        const fontSize = Math.min(28, Math.max(14, 16 / zoom));
-        ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+        // Cluster name — small + truncated. Caps font tight so it doesn't
+        // grow to canvas-spanning size at very low zoom.
+        const truncName = cluster.name.length > 18 ? cluster.name.slice(0, 17) + '…' : cluster.name;
+        const fontSize = Math.min(16, Math.max(10, 10 / zoom));
+        ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#fff';
-        ctx.fillText(truncName, cluster.cx, cluster.cy - 14 / zoom);
+        ctx.fillText(truncName, cluster.cx, cluster.cy - 10 / zoom);
 
-        const pctFont = Math.min(24, Math.max(12, 14 / zoom));
+        const pctFont = Math.min(14, Math.max(9, 9 / zoom));
         ctx.font = `bold ${pctFont}px system-ui, sans-serif`;
         ctx.fillStyle = cluster.color;
         ctx.fillText(`${pct}%`, cluster.cx, cluster.cy + 2 / zoom);
 
-        const subFont = Math.min(16, Math.max(10, 10 / zoom));
+        const subFont = Math.min(11, Math.max(7, 7 / zoom));
         ctx.font = `${subFont}px system-ui, sans-serif`;
         ctx.fillStyle = 'rgba(156,163,175,0.75)';
-        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 16 / zoom);
+        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 12 / zoom);
 
         // Top files only at mid-zoom — at very low zoom they pile into a smear.
         if (showClusterLabels && zoom >= 0.18 && zoom < 0.32) {
@@ -562,8 +561,8 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
     const spreadR = k === 1
       ? minDim * 0.08
       : Math.max(
-          900,
-          minDim * (0.7 + Math.min(k, 16) * 0.04) + densityFactor * 28,
+          1400,
+          minDim * (0.9 + Math.min(k, 16) * 0.06) + densityFactor * 50,
         );
 
     const groupCenters = new Map<string, { x: number; y: number }>();
@@ -753,70 +752,31 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
       </div>
 
       <div className="flex gap-4 mb-3 flex-wrap shrink-0">
-        <div className="relative shrink-0">
-          <button
-            onClick={() => setClusterMenuOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 text-[11px] rounded-md px-3 py-1.5 transition-colors"
-          >
-            <span>
-              Cluster:{' '}
-              <span className="text-gray-500">
-                {clusterModes.size === 0
-                  ? 'none'
-                  : CLUSTER_MODES.filter((m) => clusterModes.has(m.id)).map((m) => m.label).join(' · ')}
-              </span>
-            </span>
-            <svg width="10" height="10" viewBox="0 0 10 10" className="text-gray-500"><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          </button>
-          {clusterMenuOpen && (
-            <>
-              <div className="fixed inset-0 z-10" onClick={() => setClusterMenuOpen(false)} />
-              <div className="absolute left-0 top-full mt-1 z-20 bg-gray-900 border border-gray-800 rounded-md shadow-xl py-1 min-w-[160px]">
-                {CLUSTER_MODES.map((m) => {
-                  const active = clusterModes.has(m.id);
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() =>
-                        setClusterModes((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(m.id)) next.delete(m.id);
-                          else next.add(m.id);
-                          return next;
-                        })
-                      }
-                      className="flex items-center gap-2 w-full px-3 py-1.5 text-[11px] text-gray-300 hover:bg-gray-800 transition-colors"
-                    >
-                      <span
-                        className={`w-3.5 h-3.5 rounded border flex items-center justify-center ${
-                          active ? 'bg-indigo-500 border-indigo-500' : 'border-gray-600 bg-gray-800'
-                        }`}
-                      >
-                        {active && (
-                          <svg width="9" height="9" viewBox="0 0 9 9"><path d="M1.5 4.5L3.5 6.5L7.5 2.5" stroke="white" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        )}
-                      </span>
-                      {m.label}
-                    </button>
-                  );
-                })}
-                <div className="border-t border-gray-800 mt-1 pt-1 flex gap-1 px-2 pb-1">
-                  <button
-                    onClick={() => setClusterModes(new Set(CLUSTER_MODES.map((m) => m.id)))}
-                    className="flex-1 text-[10px] text-gray-500 hover:text-gray-300 py-1"
-                  >
-                    All
-                  </button>
-                  <button
-                    onClick={() => setClusterModes(new Set())}
-                    className="flex-1 text-[10px] text-gray-500 hover:text-gray-300 py-1"
-                  >
-                    None
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
+        <div className="inline-flex items-center gap-0.5 bg-gray-900 border border-gray-800 rounded-md p-0.5 shrink-0">
+          <span className="px-2 text-[10px] text-gray-500 uppercase tracking-wider">cluster</span>
+          {CLUSTER_MODES.map((m) => {
+            const active = clusterModes.has(m.id);
+            return (
+              <button
+                key={m.id}
+                onClick={() =>
+                  setClusterModes((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(m.id)) next.delete(m.id);
+                    else next.add(m.id);
+                    return next;
+                  })
+                }
+                className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
+                  active
+                    ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40'
+                    : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200 border border-transparent'
+                }`}
+              >
+                {m.label}
+              </button>
+            );
+          })}
         </div>
 
         <div className="relative shrink-0">

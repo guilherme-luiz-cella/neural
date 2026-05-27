@@ -196,12 +196,20 @@ router.post('/sync', authMiddleware, async (c) => {
       return folderPathById.get(parentId) ?? null;
     };
 
+    // Strip the recurring Drive-class boilerplate suffix so file names stay
+    // human-readable in the graph/explorer.
+    const cleanName = (name: string): string =>
+      name
+        .replace(/\s*[-(]?\s*pasta\s+compartilhada\s+entre\s+alunos\s+e\s+professor\s*\)?\s*$/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
     // Single atomic upsert keyed on the (user_id, google_drive_id) unique
     // constraint. New rows insert, existing rows update file_name/type/path.
     // Never produces duplicates even on concurrent sync clicks.
     const payload = driveFiles.map((f) => ({
       user_id: userId,
-      file_name: f.name,
+      file_name: cleanName(f.name),
       file_type: f.mimeType,
       google_drive_id: f.id,
       drive_path: drivePath(f),
