@@ -146,8 +146,50 @@ const getValidAccessToken = async (supabase: SupabaseClient, userId: string, cli
   return refreshed.access_token;
 };
 
-const STOP = new Set(["that","this","with","from","have","been","were","they","their","about","which","would","could","should","there","these","other","more","into","than","also","after","before","because","while","such","where","when","each","just","over","very","most","some","many","much","thus","them","the","and","for","are","you","all","but","can","her","was","one","our","out","day","get","has","him","his","how","its","may","old","see","she","two","way","who","boy","did","let","put","say","too","use","any","now","new","why","not","yes","off","per","via","yet"]);
-const tokenize = (s: string): string[] => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 3 && !STOP.has(w));
+const STOP = new Set([
+  // English
+  "that","this","with","from","have","been","were","they","their","about","which","would","could","should","there","these","other","more","into","than","also","after","before","because","while","such","where","when","each","just","over","very","most","some","many","much","thus","them","the","and","for","are","you","all","but","can","her","was","one","our","out","day","get","has","him","his","how","its","may","old","see","she","two","way","who","boy","did","let","put","say","too","use","any","now","new","why","not","yes","off","per","via","yet","upon","does","into","being","ever","than","then","also","only","over","under","while","said","more","make","made","take","took","like","such","both","each","most","ones","onto","onto","ones",
+  // Portuguese
+  "para","como","mais","seus","suas","esta","este","essa","esse","isso","aquilo","quando","onde","porque","porém","contudo","entretanto","então","ainda","sobre","entre","cada","todos","todas","outro","outra","outros","outras","muito","muita","muitos","muitas","pouco","pouca","pouquinho","sendo","feito","feita","feitos","feitas","ficar","fazer","fazendo","sido","tendo","sendo","você","vocês","nosso","nossa","nossos","nossas","meu","minha","meus","minhas","teu","tua","seus","suas","dele","dela","deles","delas","pelo","pela","pelos","pelas","ante","após","desde","durante","exceto","perante","salvo","conforme","mediante","segundo","ainda","então","logo","talvez","sempre","nunca","jamais","também","apenas","quase","muito","pouco","tudo","todo","toda","nada","algo","alguém","ninguém","alguma","algum","algumas","alguns",
+  // Spanish
+  "para","como","más","sus","esta","este","esa","ese","eso","cuando","donde","porque","pero","entonces","sobre","entre","cada","todos","todas","otro","otra","otros","otras","mucho","mucha","muchos","muchas","poco","poca","siendo","hecho","hecha","haciendo","sido","teniendo","usted","nosotros","nuestro","nuestra","mio","mia","mis","tus","ello","ellos","ellas","desde","durante","aunque","mientras","tras","también","apenas","casi","mucho","poco","todo","nada","algo","alguien","nadie",
+  // French
+  "pour","avec","dans","sont","vous","nous","leur","leurs","cette","cet","mais","plus","tres","beaucoup","peu","tout","tous","toute","toutes","autre","autres","quand","apres","avant","pendant","sans","sous","sur","entre","chaque","aussi","encore","deja","jamais","toujours","alors","donc","puis","ainsi","comme","bien","faire","fait","faite","faits","faites","etre","ete","etant","avoir","ayant",
+  // Italian
+  "per","con","nel","nella","della","dello","sono","loro","sua","sue","suoi","sue","questa","questo","queste","questi","quella","quello","quando","dove","perche","perché","pero","però","anche","ancora","sempre","mai","tutto","tutta","tutti","tutte","altro","altra","altri","altre","molto","molta","molti","molte","poco","poca","essere","stato","stata","stati","state","fare","fatto","fatta","fatti","fatte","avere","avendo","avuto",
+  // German
+  "und","oder","aber","auch","wenn","dass","sein","wird","werden","wurde","wurden","sind","sich","nach","vor","von","mit","bei","durch","gegen","ohne","unter","über","zwischen","jeder","jede","jedes","alle","alles","viele","wenig","mehr","sehr","schon","noch","immer","nie","auch","nur","fast",
+  // Drive boilerplate noise (multilingual)
+  "compartilhado","compartilhada","compartilhados","compartilhadas","comigo","shared","folder","unnamed","untitled","arquivo","arquivos","pasta","pastas","drive","google","docs","documento","documentos","file","files","copia","copy","duplicate",
+]);
+
+// Boilerplate phrases stripped before tokenizing/embedding so they don't
+// drown out signal in TF / embeddings.
+const BOILERPLATE_PATTERNS: RegExp[] = [
+  /\bpasta\s+compartilhada\b/gi,
+  /\bcompartilhad[oa]s?\s+comigo\b/gi,
+  /\bshared\s+(with\s+me|folder|drive)\b/gi,
+  /\bgoogle\s+(drive|docs|sheets|slides)\b/gi,
+  /\bapplication\/vnd\.google-apps\.[a-z]+\b/gi,
+  /\buntitled\s+(document|file)\b/gi,
+];
+
+const stripBoilerplate = (s: string): string => {
+  let out = s;
+  for (const p of BOILERPLATE_PATTERNS) out = out.replace(p, " ");
+  return out.replace(/\s+/g, " ").trim();
+};
+
+const tokenize = (s: string): string[] => {
+  const cleaned = stripBoilerplate(s);
+  return cleaned
+    .toLowerCase()
+    // Unicode-aware: keep letters from any script (Latin, Cyrillic, CJK etc),
+    // numbers, and word separators. Replace everything else with space.
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 3 && !STOP.has(w));
+};
 const bigrams = (toks: string[]): string[] => { const out: string[] = []; for (let i = 0; i < toks.length - 1; i++) { if (toks[i].length >= 4 && toks[i + 1].length >= 4) out.push(`${toks[i]} ${toks[i + 1]}`); } return out; };
 const computeSubjects = (content: string, limit = 24): string[] => {
   if (!content) return [];
@@ -201,7 +243,9 @@ const crawlUser = async (supabase: SupabaseClient, userId: string, clientId: str
     const content = await fetchFileContent(f.google_drive_id, f.file_type, accessToken);
     if (!content || !content.trim()) return;
     const subjects = computeSubjects(content);
-    const embedding = await embed(`${f.file_name}\n${content}`);
+    // Strip boilerplate before embedding so "pasta compartilhada" etc. don't
+    // skew vector similarity.
+    const embedding = await embed(stripBoilerplate(`${f.file_name}\n${content}`));
     await supabase.from("files").update({ content, subjects, subjects_updated_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", f.id);
     if (embedding) {
       await supabase.from("file_embeddings").upsert({ file_id: f.id, embedding_vector: embedding, status: "indexed", indexed_at: new Date().toISOString(), error_message: null }, { onConflict: "file_id" });

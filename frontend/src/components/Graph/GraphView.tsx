@@ -670,16 +670,23 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
     setCrawling(true);
     setCrawlMsg('Starting crawl…');
 
+    // ETA computed from a sliding rolling rate window (samples over time).
+    const formatEta = (seconds: number): string => {
+      if (!isFinite(seconds) || seconds <= 0) return '';
+      if (seconds < 90) return `~${Math.ceil(seconds)}s`;
+      if (seconds < 60 * 90) return `~${Math.ceil(seconds / 60)}m`;
+      const h = Math.floor(seconds / 3600);
+      const m = Math.round((seconds % 3600) / 60);
+      return m === 0 ? `~${h}h` : `~${h}h ${m}m`;
+    };
+
+    type Sample = { t: number; indexed: number };
+    const samples: Sample[] = [];
+
     try {
-      // Kick: inserts crawler_jobs row for this user + pings the Supabase
-      // Edge Function for an immediate first batch. pg_cron continues from
-      // then on.
       const kick = await api.post('/crawler/run-all');
       setCrawlMsg(kick.data?.message ?? 'Crawl queued');
 
-      // Poll status until remaining=0 or 5 min, then stop polling — cron keeps
-      // running in the background. Refresh graph after each status check so
-      // new connections appear live.
       const t0 = Date.now();
       while (Date.now() - t0 < 5 * 60 * 1000) {
         await new Promise((r) => setTimeout(r, 4000));
@@ -689,10 +696,29 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
           const indexed = s.indexed ?? 0;
           const remaining = s.remaining ?? 0;
           const conns = s.connections ?? 0;
+
+          samples.push({ t: Date.now(), indexed });
+          // Keep last 6 samples (~24s window) for rate calc.
+          while (samples.length > 6) samples.shift();
+
+          let etaText = '';
+          if (samples.length >= 2 && remaining > 0) {
+            const first = samples[0];
+            const last = samples[samples.length - 1];
+            const dtSec = (last.t - first.t) / 1000;
+            const dIdx = last.indexed - first.indexed;
+            if (dtSec > 0 && dIdx > 0) {
+              const ratePerSec = dIdx / dtSec;
+              etaText = ` · ETA ${formatEta(remaining / ratePerSec)}`;
+            } else if (dIdx === 0) {
+              etaText = ' · ETA calculating…';
+            }
+          }
+
           setCrawlMsg(
             remaining === 0
               ? `Done · ${indexed} indexed · ${conns} connections`
-              : `Crawling… ${indexed} indexed · ${remaining} pending · ${conns} connections`,
+              : `Crawling… ${indexed} indexed · ${remaining} pending · ${conns} connections${etaText}`,
           );
           fetchGraph();
           if (remaining === 0) break;
