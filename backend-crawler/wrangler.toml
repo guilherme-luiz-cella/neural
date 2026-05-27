@@ -14,8 +14,11 @@ FRONTEND_URL = "http://localhost:5173"
 [env.production.vars]
 FRONTEND_URL = "https://neural.cella.website,https://neural-network-3d7.pages.dev,*.neural-network-3d7.pages.dev,*.cella.website"
 
+# Deprecated: crawl pipeline moved to Supabase Edge Function (crawl-batch).
+# Cron disabled so we don't double-process. Keeping the worker as a parking
+# lot until we delete it entirely.
 [env.production.triggers]
-crons = ["* * * * *"]  # every minute on Workers free plan
+crons = []
 
 # Secrets (set per env via `wrangler secret put NAME --env production`):
 #   SUPABASE_URL

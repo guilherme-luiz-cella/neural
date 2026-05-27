@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3Force from 'd3-force';
 import * as d3Zoom from 'd3-zoom';
 import * as d3Selection from 'd3-selection';
-import { api, crawlerApi } from '../../utils/api';
+import { api } from '../../utils/api';
 import { AxiosError } from 'axios';
 
 interface GraphNode extends d3Force.SimulationNodeDatum {
@@ -669,40 +669,33 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
   const handleCrawl = async () => {
     setCrawling(true);
     setCrawlMsg('Starting crawl…');
-    const usingSoloWorker = !!import.meta.env.VITE_CRAWLER_URL;
-    const client = usingSoloWorker ? crawlerApi : api;
-    const runPath = usingSoloWorker ? '/run-all' : '/crawler/run';
-    const statusPath = usingSoloWorker ? '/status' : '/crawler/run';
 
     try {
-      // Kick a job. crawler worker upserts a crawler_jobs row so the cron
-      // (every 1 min) keeps draining this user's queue after we stop polling.
-      const kick = await client.post(runPath);
-      const kd = kick.data?.data ?? {};
-      setCrawlMsg(
-        kd.done
-          ? kick.data.message
-          : `Crawling… ${kd.indexed ?? 0} indexed · ${kd.remaining ?? 0} pending`,
-      );
+      // Kick: inserts crawler_jobs row for this user + pings the Supabase
+      // Edge Function for an immediate first batch. pg_cron continues from
+      // then on.
+      const kick = await api.post('/crawler/run-all');
+      setCrawlMsg(kick.data?.message ?? 'Crawl queued');
 
-      // Poll status. Stop when remaining=0 OR after 5 min (cron continues).
+      // Poll status until remaining=0 or 5 min, then stop polling — cron keeps
+      // running in the background. Refresh graph after each status check so
+      // new connections appear live.
       const t0 = Date.now();
       while (Date.now() - t0 < 5 * 60 * 1000) {
         await new Promise((r) => setTimeout(r, 4000));
         try {
-          const sRes = usingSoloWorker
-            ? await client.get(statusPath)
-            : await client.post(statusPath);
+          const sRes = await api.get('/crawler/status');
           const s = sRes.data?.data ?? {};
           const indexed = s.indexed ?? 0;
           const remaining = s.remaining ?? 0;
+          const conns = s.connections ?? 0;
           setCrawlMsg(
             remaining === 0
-              ? `Done · ${indexed} indexed`
-              : `Crawling… ${indexed} indexed · ${remaining} pending (cron keeps running)`,
+              ? `Done · ${indexed} indexed · ${conns} connections`
+              : `Crawling… ${indexed} indexed · ${remaining} pending · ${conns} connections`,
           );
-          if (remaining === 0) break;
           fetchGraph();
+          if (remaining === 0) break;
         } catch {
           break;
         }
