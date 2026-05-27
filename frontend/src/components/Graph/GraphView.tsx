@@ -346,27 +346,28 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
         ctx.lineWidth = 3 / zoom;
         ctx.stroke();
 
-        // Cluster name
-        const fontSize = Math.max(14, 20 / zoom);
+        // Cluster name — truncate to keep within bubble, cap font so labels
+        // don't blow up to canvas-spanning sizes at very low zoom.
+        const truncName = cluster.name.length > 22 ? cluster.name.slice(0, 21) + '…' : cluster.name;
+        const fontSize = Math.min(28, Math.max(14, 16 / zoom));
         ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#fff';
-        ctx.fillText(cluster.name, cluster.cx, cluster.cy - 16 / zoom);
+        ctx.fillText(truncName, cluster.cx, cluster.cy - 14 / zoom);
 
-        // Percentage and count
-        const pctFont = Math.max(13, 18 / zoom);
+        const pctFont = Math.min(24, Math.max(12, 14 / zoom));
         ctx.font = `bold ${pctFont}px system-ui, sans-serif`;
         ctx.fillStyle = cluster.color;
         ctx.fillText(`${pct}%`, cluster.cx, cluster.cy + 2 / zoom);
 
-        const subFont = Math.max(10, 12 / zoom);
+        const subFont = Math.min(16, Math.max(10, 10 / zoom));
         ctx.font = `${subFont}px system-ui, sans-serif`;
         ctx.fillStyle = 'rgba(156,163,175,0.75)';
-        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 18 / zoom);
+        ctx.fillText(`${cluster.count} file${cluster.count !== 1 ? 's' : ''}`, cluster.cx, cluster.cy + 16 / zoom);
 
-        // Show top files in cluster (Wikipedia-style) when labels are enabled
-        if (showClusterLabels && zoom < 0.3) {
+        // Top files only at mid-zoom — at very low zoom they pile into a smear.
+        if (showClusterLabels && zoom >= 0.18 && zoom < 0.32) {
           const topFiles = cluster.files.slice(0, 3);
           const fileListY = cluster.cy + r + 24 / zoom;
           const fileFont = Math.max(8, 10 / zoom);
@@ -550,13 +551,20 @@ export const GraphView = ({ onNodeClick, crawlTrigger }: Props) => {
     for (const n of nodes) clusterKeys.add(n.group);
     const clusterList = [...clusterKeys];
 
-    // Spread cluster centers far enough apart that they don't visually
-    // overlap even with hundreds of nodes per cluster. Radius grows with both
-    // canvas size and cluster count so many small clusters don't pile up.
+    // Spread cluster centers far enough apart that bubbles + labels don't
+    // pile on top of each other. Radius grows with both canvas size and the
+    // SQUARE ROOT of (clusters * avg cluster size) so denser graphs get more
+    // breathing room.
     const minDim = Math.min(canvas.width, canvas.height);
-    const spreadR = clusterList.length === 1
+    const k = clusterList.length;
+    const avgPerCluster = k > 0 ? nodes.length / k : 0;
+    const densityFactor = Math.sqrt(Math.max(1, avgPerCluster));
+    const spreadR = k === 1
       ? minDim * 0.08
-      : Math.max(540, minDim * (0.5 + Math.min(clusterList.length, 12) * 0.02));
+      : Math.max(
+          900,
+          minDim * (0.7 + Math.min(k, 16) * 0.04) + densityFactor * 28,
+        );
 
     const groupCenters = new Map<string, { x: number; y: number }>();
     clusterList.forEach((key, i) => {
