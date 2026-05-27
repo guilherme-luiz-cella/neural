@@ -34,11 +34,18 @@ export const SearchBar = ({ onSelect }: Props) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<number | undefined>(undefined);
 
-  // Cmd/Ctrl+K opens. Esc closes.
+  // Multiple shortcuts so we don't fight browser quick-find (Cmd+K can be
+  // hijacked in some browsers/extensions). "/" works like GitHub / Slack
+  // when not focused on an input. Esc closes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const isCmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k';
-      if (isCmdK) {
+      const isCmdP = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p';
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const inField = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement | null)?.isContentEditable;
+      const isSlash = e.key === '/' && !inField && !e.metaKey && !e.ctrlKey;
+
+      if (isCmdK || isCmdP || isSlash) {
         e.preventDefault();
         setOpen((o) => !o);
       } else if (e.key === 'Escape' && open) {
@@ -107,12 +114,13 @@ export const SearchBar = ({ onSelect }: Props) => {
   const trigger = (
     <button
       onClick={() => setOpen(true)}
-      className="inline-flex items-center gap-2 text-xs text-gray-400 bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-md px-3 py-1.5 transition-colors"
-      aria-label="Search files"
+      className="inline-flex items-center gap-2.5 w-full sm:w-80 text-sm text-gray-500 bg-gray-900 border border-gray-800 hover:border-indigo-500/50 hover:bg-gray-850 rounded-lg px-3 py-2 transition-colors text-left"
+      aria-label="Search files (press / or Cmd+K)"
     >
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="7" cy="7" r="5"/><path d="M14 14l-3-3"/></svg>
-      Search files
-      <kbd className="ml-2 text-[10px] px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-gray-500">⌘K</kbd>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-500"><circle cx="7" cy="7" r="5"/><path d="M14 14l-3-3"/></svg>
+      <span className="flex-1 truncate">Search files…</span>
+      <kbd className="text-[10px] px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-gray-400 font-mono">/</kbd>
+      <kbd className="text-[10px] px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-gray-400 font-mono hidden md:inline">⌘K</kbd>
     </button>
   );
 

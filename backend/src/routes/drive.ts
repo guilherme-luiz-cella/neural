@@ -196,63 +196,31 @@ router.post('/sync', authMiddleware, async (c) => {
       return folderPathById.get(parentId) ?? null;
     };
 
-    // Fetch existing Drive file IDs for this user
-    const { data: existing } = await supabase
-      .from('files')
-      .select('id, google_drive_id')
-      .eq('user_id', userId)
-      .not('google_drive_id', 'is', null);
+    // Single atomic upsert keyed on the (user_id, google_drive_id) unique
+    // constraint. New rows insert, existing rows update file_name/type/path.
+    // Never produces duplicates even on concurrent sync clicks.
+    const payload = driveFiles.map((f) => ({
+      user_id: userId,
+      file_name: f.name,
+      file_type: f.mimeType,
+      google_drive_id: f.id,
+      drive_path: drivePath(f),
+    }));
 
-    const existingMap = new Map((existing ?? []).map((f) => [f.google_drive_id, f.id]));
-
-    const toInsert = driveFiles
-      .filter((f) => !existingMap.has(f.id))
-      .map((f) => ({
-        user_id: userId,
-        file_name: f.name,
-        file_type: f.mimeType,
-        google_drive_id: f.id,
-        drive_path: drivePath(f),
-      }));
-
-    const toUpdate = driveFiles
-      .filter((f) => existingMap.has(f.id))
-      .map((f) => ({
-        id: existingMap.get(f.id)!,
-        file_name: f.name,
-        file_type: f.mimeType,
-        drive_path: drivePath(f),
-      }));
-
-    // Bulk-insert new rows. We do NOT fetch content here — content extraction
-    // (PDF parsing, unzip, etc.) is CPU-heavy and would blow the Worker CPU
-    // limit on free plan. The crawler worker's cron picks up content async.
-    let inserted = 0;
-    if (toInsert.length > 0) {
-      const { data } = await supabase.from('files').insert(toInsert).select('id');
-      inserted = data?.length ?? 0;
+    let synced = 0;
+    if (payload.length > 0) {
+      const { data, error: upErr } = await supabase
+        .from('files')
+        .upsert(payload, { onConflict: 'user_id,google_drive_id', ignoreDuplicates: false })
+        .select('id');
+      if (upErr) throw new Error(upErr.message);
+      synced = data?.length ?? 0;
     }
 
-    // Bulk-update existing rows. Single statement per row would burn CPU, so
-    // we batch updates client-side using upsert on google_drive_id.
-    let updated = 0;
-    if (toUpdate.length > 0) {
-      const upsertPayload = toUpdate.map((u) => ({
-        id: u.id,
-        user_id: userId,
-        file_name: u.file_name,
-        file_type: u.file_type,
-        drive_path: u.drive_path,
-      }));
-      const { data } = await supabase.from('files').upsert(upsertPayload, { onConflict: 'id' }).select('id');
-      updated = data?.length ?? 0;
-    }
-
-    const synced = inserted + updated;
     return c.json({
       success: true,
-      message: `Synced ${synced} files (${inserted} new, ${updated} updated). Content will be crawled in the background.`,
-      data: { synced_count: synced, inserted, updated },
+      message: `Synced ${synced} files. Content will be crawled in the background.`,
+      data: { synced_count: synced },
     });
   } catch (err) {
     if (err instanceof Error && err.message === 'DRIVE_NOT_CONNECTED') {
